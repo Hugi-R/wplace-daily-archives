@@ -1,0 +1,17 @@
+[package]
+name = "wplace-daily-archives"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wimage = { path = "/run/media/system/DataBtrfs/wplace/wplace-image/wimage" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+crossbeam-channel = "0.5"
+clap = { version = "4.0", features = ["derive"] }
+anyhow = "1.0"
+chrono = "0.4"
+num_cpus = "1.0"
+rayon = "1.10"
+
+[dev-dependencies]
+tempfile = "3.14"

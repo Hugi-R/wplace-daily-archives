@@ -1,4 +1,5 @@
 use std::thread;
+use std::time::Instant;
 
 use anyhow::Context;
 use crossbeam_channel::bounded;
@@ -316,15 +317,38 @@ fn merge_level(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<(
             tx.commit().unwrap();
         };
 
+        // Metrics
+        let start = Instant::now();
+        let mut processed: usize = 0;
+        let mut last_print = start;
+
         for r in res_rx {
             batch.push(r);
+            processed += 1;
             if batch.len() >= 2000 {
                 flush(&mut conn, &mut batch);
+                if last_print.elapsed() >= std::time::Duration::from_secs(10) {
+                    let elapsed = start.elapsed();
+                    let rate = processed as f64 / elapsed.as_secs_f64();
+                    eprintln!(
+                        "  {} jobs processed in {:.1}s ({:.0} jobs/s)",
+                        processed, elapsed.as_secs_f64(), rate
+                    );
+                    last_print = Instant::now();
+                }
             }
         }
         if !batch.is_empty() {
             flush(&mut conn, &mut batch);
         }
+
+        // Final metrics
+        let elapsed = start.elapsed();
+        let rate = processed as f64 / elapsed.as_secs_f64();
+        eprintln!(
+            "  {} jobs processed in {:.1}s ({:.0} jobs/s)",
+            processed, elapsed.as_secs_f64(), rate
+        );
     });
 
     reader.join().unwrap();

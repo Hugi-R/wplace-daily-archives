@@ -151,14 +151,17 @@ fn process_job(job: MergeJob) -> MergeResult {
 // ─── Pipeline ───────────────────────────────────────────────────────────────
 
 /// Run the full merge pipeline for a single z-level.
+///
+/// The reader streams source tiles in x-strips (50 parent tiles at a time) to
+/// keep memory bounded — only ~250 TileHistory blobs are held in memory
+/// simultaneously, regardless of map size.
 fn merge_level(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<()> {
     let source_z = z + 1;
 
-    // Open a connection to discover which parent tiles exist at z-1.
+    // Open a connection to discover the source tile bounding box.
     let conn = Connection::open(db_path).context("open db")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
 
-    // Check if there are any tiles at z-1.
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tiles WHERE z = ?1",
         params![source_z],
@@ -174,100 +177,110 @@ fn merge_level(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<(
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
     )?;
 
-    // Parent tile range: output (x, y) where 2x and 2y cover the parent range.
-    let parent_min_x = min_x / 2;
-    let parent_max_x = max_x / 2;
-    let parent_min_y = min_y / 2;
-    let parent_max_y = max_y / 2;
+    // Parent tile range (cast to i32; tile coords are well within i32 range).
+    let parent_min_x = (min_x / 2) as i32;
+    let parent_max_x = (max_x / 2) as i32;
+    let parent_min_y = (min_y / 2) as i32;
+    let parent_max_y = (max_y / 2) as i32;
 
-    // Pre-fetch all parent tiles at z-1 into a map for quick lookup.
-    let mut parent_tiles: std::collections::HashMap<(i32, i32), Vec<u8>> =
-        std::collections::HashMap::new();
-
-    let mut fetch = conn.prepare(
-        "SELECT x, y, data FROM tiles WHERE z = ?1"
-    )?;
-
-    let rows: Vec<(i32, i32, Vec<u8>)> = fetch
-        .query_map(params![source_z], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    for (x, y, data) in rows {
-        parent_tiles.insert((x, y), data);
-    }
-
-    // Pre-fetch existing tiles at level z (to carry forward history).
-    let mut existing_tiles: std::collections::HashMap<(i32, i32), Vec<u8>> =
-        std::collections::HashMap::new();
-
-    if z >= 0 {
-        // z can be 0, the condition z >= 0 is always true, but we need to check if the level exists.
-        let mut fetch = conn.prepare(
-            "SELECT x, y, data FROM tiles WHERE z = ?1"
-        )?;
-        let rows: Vec<(i32, i32, Vec<u8>)> = fetch
-            .query_map(params![z], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-        for (x, y, data) in rows {
-            existing_tiles.insert((x, y), data);
-        }
-    }
-
-    // Build jobs.
-    let jobs: Vec<MergeJob> = (parent_min_x..=parent_max_x)
-        .flat_map(|px| {
-            (parent_min_y..=parent_max_y).map(move |py| (px, py))
-        })
-        .filter_map(|(px, py)| {
-            let px = px as i32;
-            let py = py as i32;
-            let sx0 = 2 * px;
-            let sy0 = 2 * py;
-            let sx1 = sx0 + 1;
-            let sy1 = sy0 + 1;
-
-            let tl = parent_tiles.get(&(sx0, sy0)).cloned();
-            let tr = parent_tiles.get(&(sx1, sy0)).cloned();
-            let bl = parent_tiles.get(&(sx0, sy1)).cloned();
-            let br = parent_tiles.get(&(sx1, sy1)).cloned();
-
-            // Skip if all 4 source tiles are missing in DB.
-            if tl.is_none() && tr.is_none() && bl.is_none() && br.is_none() {
-                return None;
-            }
-
-            let existing = existing_tiles.get(&(px, py)).cloned();
-
-            Some(MergeJob {
-                z,
-                x: px,
-                y: py,
-                date_hours,
-                tiles: [tl, tr, bl, br],
-                existing,
-            })
-        })
-        .collect();
-
-    if jobs.is_empty() {
-        return Ok(());
-    }
+    drop(conn); // bounding-box query done; reader will open its own connection.
 
     // Channels.
     let (job_tx, job_rx) = bounded::<MergeJob>(2000);
     let (res_tx, res_rx) = bounded::<MergeResult>(2000);
 
-    // Reader thread: send all jobs.
+    let db_path = db_path.to_string();
+
+    // ── Reader thread: streams jobs from SQLite in x-strips ──
+    const STRIP_SIZE: i32 = 50; // parent x-values per strip
+
+    let reader_path = db_path.clone();
     let reader = thread::spawn(move || {
-        for job in jobs {
-            job_tx.send(job).unwrap();
+        let conn = Connection::open(&reader_path).expect("reader open db");
+        conn.pragma_update(None, "journal_mode", "WAL").expect("WAL mode");
+
+        let mut fetch_source = conn.prepare_cached(
+            "SELECT x, y, data FROM tiles WHERE z = ?1 AND y = ?2 AND x >= ?3 AND x <= ?4",
+        ).expect("prepare fetch_source");
+
+        let mut fetch_existing = conn.prepare_cached(
+            "SELECT x, y, data FROM tiles WHERE z = ?1 AND y = ?2 AND x >= ?3 AND x <= ?4",
+        ).expect("prepare fetch_existing");
+
+        for py in parent_min_y..=parent_max_y {
+            let sy0 = 2 * py;
+            let sy1 = 2 * py + 1;
+
+            // Process parent x in strips.
+            for strip_start in (parent_min_x..=parent_max_x).step_by(STRIP_SIZE as usize) {
+                let strip_end = std::cmp::min(strip_start + STRIP_SIZE - 1, parent_max_x);
+
+                // Source x range needed: 2*strip_start .. 2*strip_end+1.
+                let sx_min = 2 * strip_start;
+                let sx_max = 2 * strip_end + 1;
+
+                // Query source tiles for this strip (two y-rows).
+                let mut source_map: std::collections::HashMap<(i32, i32), Vec<u8>> =
+                    std::collections::HashMap::new();
+
+                for &sy in &[sy0, sy1] {
+                    let rows = fetch_source.query_map(
+                        params![source_z, sy, sx_min, sx_max],
+                        |r| Ok((r.get::<_, i32>(0).unwrap(), r.get::<_, i32>(1).unwrap(), r.get::<_, Vec<u8>>(2).unwrap())),
+                    ).expect("query source tiles");
+
+                    for row in rows {
+                        let (x, y, data) = row.expect("row");
+                        source_map.insert((x, y), data);
+                    }
+                }
+
+                // Query existing tiles for this strip.
+                let mut existing_map: std::collections::HashMap<(i32, i32), Vec<u8>> =
+                    std::collections::HashMap::new();
+
+                let rows = fetch_existing.query_map(
+                    params![z, py, strip_start, strip_end],
+                    |r| Ok((r.get::<_, i32>(0).unwrap(), r.get::<_, i32>(1).unwrap(), r.get::<_, Vec<u8>>(2).unwrap())),
+                ).expect("query existing tiles");
+
+                for row in rows {
+                    let (x, y, data) = row.expect("row");
+                    existing_map.insert((x, y), data);
+                }
+
+                // Assemble and send jobs for this strip.
+                for px in strip_start..=strip_end {
+                    let sx0 = 2 * px;
+                    let sx1 = sx0 + 1;
+
+                    let tl = source_map.get(&(sx0, sy0)).cloned();
+                    let tr = source_map.get(&(sx1, sy0)).cloned();
+                    let bl = source_map.get(&(sx0, sy1)).cloned();
+                    let br = source_map.get(&(sx1, sy1)).cloned();
+
+                    if tl.is_none() && tr.is_none() && bl.is_none() && br.is_none() {
+                        continue;
+                    }
+
+                    let existing = existing_map.get(&(px, py)).cloned();
+
+                    job_tx.send(MergeJob {
+                        z,
+                        x: px,
+                        y: py,
+                        date_hours,
+                        tiles: [tl, tr, bl, br],
+                        existing,
+                    }).expect("send job");
+                }
+
+                // source_map and existing_map are dropped here — memory freed per strip.
+            }
         }
-        // drop job_tx to close channel
     });
 
-    // Worker threads.
+    // ── Worker threads ──
     let n_workers = num_cpus::get();
     let mut workers = Vec::new();
     for _ in 0..n_workers {
@@ -276,19 +289,17 @@ fn merge_level(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<(
         workers.push(thread::spawn(move || {
             for job in job_rx {
                 let result = process_job(job);
-                // Only send non-empty results.
                 if !result.data.is_empty() {
                     res_tx.send(result).unwrap();
                 }
             }
         }));
     }
-    drop(res_tx); // drop original; workers hold clones
+    drop(res_tx);
 
-    // Writer thread: batched inserts/updates.
-    let writer_path = db_path.to_string();
+    // ── Writer thread: batched inserts/updates ──
     let writer = thread::spawn(move || {
-        let mut conn = Connection::open(&writer_path).unwrap();
+        let mut conn = Connection::open(&db_path).unwrap();
         conn.pragma_update(None, "synchronous", "NORMAL").unwrap();
 
         let mut batch = Vec::with_capacity(2000);
@@ -296,7 +307,7 @@ fn merge_level(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<(
             let tx = conn.transaction().unwrap();
             {
                 let mut stmt = tx.prepare_cached(
-                    "INSERT OR REPLACE INTO tiles (z, x, y, data) VALUES (?1, ?2, ?3, ?4)"
+                    "INSERT OR REPLACE INTO tiles (z, x, y, data) VALUES (?1, ?2, ?3, ?4)",
                 ).unwrap();
                 for r in batch.drain(..) {
                     stmt.execute(params![r.z, r.x, r.y, r.data]).unwrap();

@@ -1,0 +1,778 @@
+use std::thread;
+
+use anyhow::Context;
+use crossbeam_channel::bounded;
+use rusqlite::{params, Connection};
+
+use wimage::palette;
+use wimage::tilehistory::DateHours;
+use wimage::{PalettedImage, tilehistory::TileHistory};
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+struct MergeJob {
+    z: i32,
+    x: i32,
+    y: i32,
+    date_hours: DateHours,
+    /// 4 source TileHistory blobs from z-1: [TL, TR, BL, BR], None if tile missing in DB
+    tiles: [Option<Vec<u8>>; 4],
+    /// Existing TileHistory blob at (z, x, y) if any
+    existing: Option<Vec<u8>>,
+}
+
+struct MergeResult {
+    z: i32,
+    x: i32,
+    y: i32,
+    data: Vec<u8>,
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Weights for downscale_mode_weighted: visible colours win over background.
+fn make_weights() -> [u32; 256] {
+    let mut w = [100u32; 256];
+    w[palette::TRANSPARENT as usize] = 5;
+    w[palette::WHITE as usize] = 10;
+    w
+}
+
+/// Return an empty 1000×1000 tile filled with TRANSPARENT.
+fn empty_tile() -> PalettedImage {
+    PalettedImage {
+        width: 1000,
+        height: 1000,
+        indices: vec![palette::TRANSPARENT; 1000 * 1000],
+    }
+}
+
+/// Stitch four 1000×1000 tiles into a 2000×2000 canvas, then downscale to 1000×1000.
+fn stitch_and_downscale(tiles: [PalettedImage; 4]) -> PalettedImage {
+    let mut canvas = vec![palette::TRANSPARENT; 2000 * 2000];
+
+    // top-left  (0..1000, 0..1000)
+    for row in 0..1000 {
+        let src_off = row * 1000;
+        let dst_off = row * 2000;
+        canvas[dst_off..dst_off + 1000].copy_from_slice(&tiles[0].indices[src_off..src_off + 1000]);
+    }
+    // top-right  (1000..2000, 0..1000)
+    for row in 0..1000 {
+        let src_off = row * 1000;
+        let dst_off = row * 2000 + 1000;
+        canvas[dst_off..dst_off + 1000].copy_from_slice(&tiles[1].indices[src_off..src_off + 1000]);
+    }
+    // bottom-left  (0..1000, 1000..2000)
+    for row in 0..1000 {
+        let src_off = row * 1000;
+        let dst_off = (row + 1000) * 2000;
+        canvas[dst_off..dst_off + 1000].copy_from_slice(&tiles[2].indices[src_off..src_off + 1000]);
+    }
+    // bottom-right  (1000..2000, 1000..2000)
+    for row in 0..1000 {
+        let src_off = row * 1000;
+        let dst_off = (row + 1000) * 2000 + 1000;
+        canvas[dst_off..dst_off + 1000].copy_from_slice(&tiles[3].indices[src_off..src_off + 1000]);
+    }
+
+    let big = PalettedImage {
+        width: 2000,
+        height: 2000,
+        indices: canvas,
+    };
+
+    let weights = make_weights();
+    big.downscale_mode_weighted(&weights, 2)
+}
+
+// ─── Worker: process one job ────────────────────────────────────────────────
+
+/// Decode the 4 source tiles, stitch+downscale, update TileHistory, return result blob.
+fn process_job(job: MergeJob) -> MergeResult {
+    let date_hours = job.date_hours;
+
+    // Decode each source tile image at the target date_hours; missing → empty TRANSPARENT tile.
+    let decode_tile = |blob: Option<Vec<u8>>| -> PalettedImage {
+        match blob {
+            Some(data) => {
+                let th = TileHistory::from_bytes(&data).expect("valid TileHistory");
+                match th.get(date_hours) {
+                    Ok(img) => img,
+                    Err(_) => empty_tile(),
+                }
+            }
+            None => empty_tile(),
+        }
+    };
+
+    let tiles = [
+        decode_tile(job.tiles[0].clone()),
+        decode_tile(job.tiles[1].clone()),
+        decode_tile(job.tiles[2].clone()),
+        decode_tile(job.tiles[3].clone()),
+    ];
+
+    // Check if all tiles are empty (all missing + no data at date_hours)
+    let all_empty = tiles.iter().all(|t| {
+        t.indices.iter().all(|&v| v == palette::TRANSPARENT)
+    });
+    if all_empty {
+        // Nothing to merge; skip but return a valid result with empty TileHistory
+        return MergeResult {
+            z: job.z,
+            x: job.x,
+            y: job.y,
+            data: vec![],
+        };
+    }
+
+    let merged = stitch_and_downscale(tiles);
+
+    // Build or update TileHistory
+    let mut th = match &job.existing {
+        Some(data) => TileHistory::from_bytes(data).expect("valid TileHistory"),
+        None => TileHistory {
+            imgs: Default::default(),
+        },
+    };
+
+    th.set(date_hours, merged)
+        .expect("TileHistory::set should succeed");
+
+    MergeResult {
+        z: job.z,
+        x: job.x,
+        y: job.y,
+        data: th.to_bytes(),
+    }
+}
+
+// ─── Pipeline ───────────────────────────────────────────────────────────────
+
+/// Run the full merge pipeline for a single z-level.
+fn merge_level(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<()> {
+    let source_z = z + 1;
+
+    // Open a connection to discover which parent tiles exist at z-1.
+    let conn = Connection::open(db_path).context("open db")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+
+    // Check if there are any tiles at z-1.
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tiles WHERE z = ?1",
+        params![source_z],
+        |r| r.get(0),
+    )?;
+    if count == 0 {
+        return Ok(());
+    }
+
+    let (min_x, max_x, min_y, max_y) = conn.query_row(
+        "SELECT MIN(x), MAX(x), MIN(y), MAX(y) FROM tiles WHERE z = ?1",
+        params![source_z],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
+    )?;
+
+    // Parent tile range: output (x, y) where 2x and 2y cover the parent range.
+    let parent_min_x = min_x / 2;
+    let parent_max_x = max_x / 2;
+    let parent_min_y = min_y / 2;
+    let parent_max_y = max_y / 2;
+
+    // Pre-fetch all parent tiles at z-1 into a map for quick lookup.
+    let mut parent_tiles: std::collections::HashMap<(i32, i32), Vec<u8>> =
+        std::collections::HashMap::new();
+
+    let mut fetch = conn.prepare(
+        "SELECT x, y, data FROM tiles WHERE z = ?1"
+    )?;
+
+    let rows: Vec<(i32, i32, Vec<u8>)> = fetch
+        .query_map(params![source_z], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (x, y, data) in rows {
+        parent_tiles.insert((x, y), data);
+    }
+
+    // Pre-fetch existing tiles at level z (to carry forward history).
+    let mut existing_tiles: std::collections::HashMap<(i32, i32), Vec<u8>> =
+        std::collections::HashMap::new();
+
+    if z >= 0 {
+        // z can be 0, the condition z >= 0 is always true, but we need to check if the level exists.
+        let mut fetch = conn.prepare(
+            "SELECT x, y, data FROM tiles WHERE z = ?1"
+        )?;
+        let rows: Vec<(i32, i32, Vec<u8>)> = fetch
+            .query_map(params![z], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for (x, y, data) in rows {
+            existing_tiles.insert((x, y), data);
+        }
+    }
+
+    // Build jobs.
+    let jobs: Vec<MergeJob> = (parent_min_x..=parent_max_x)
+        .flat_map(|px| {
+            (parent_min_y..=parent_max_y).map(move |py| (px, py))
+        })
+        .filter_map(|(px, py)| {
+            let px = px as i32;
+            let py = py as i32;
+            let sx0 = 2 * px;
+            let sy0 = 2 * py;
+            let sx1 = sx0 + 1;
+            let sy1 = sy0 + 1;
+
+            let tl = parent_tiles.get(&(sx0, sy0)).cloned();
+            let tr = parent_tiles.get(&(sx1, sy0)).cloned();
+            let bl = parent_tiles.get(&(sx0, sy1)).cloned();
+            let br = parent_tiles.get(&(sx1, sy1)).cloned();
+
+            // Skip if all 4 source tiles are missing in DB.
+            if tl.is_none() && tr.is_none() && bl.is_none() && br.is_none() {
+                return None;
+            }
+
+            let existing = existing_tiles.get(&(px, py)).cloned();
+
+            Some(MergeJob {
+                z,
+                x: px,
+                y: py,
+                date_hours,
+                tiles: [tl, tr, bl, br],
+                existing,
+            })
+        })
+        .collect();
+
+    if jobs.is_empty() {
+        return Ok(());
+    }
+
+    // Channels.
+    let (job_tx, job_rx) = bounded::<MergeJob>(2000);
+    let (res_tx, res_rx) = bounded::<MergeResult>(2000);
+
+    // Reader thread: send all jobs.
+    let reader = thread::spawn(move || {
+        for job in jobs {
+            job_tx.send(job).unwrap();
+        }
+        // drop job_tx to close channel
+    });
+
+    // Worker threads.
+    let n_workers = num_cpus::get();
+    let mut workers = Vec::new();
+    for _ in 0..n_workers {
+        let job_rx = job_rx.clone();
+        let res_tx = res_tx.clone();
+        workers.push(thread::spawn(move || {
+            for job in job_rx {
+                let result = process_job(job);
+                // Only send non-empty results.
+                if !result.data.is_empty() {
+                    res_tx.send(result).unwrap();
+                }
+            }
+        }));
+    }
+    drop(res_tx); // drop original; workers hold clones
+
+    // Writer thread: batched inserts/updates.
+    let writer_path = db_path.to_string();
+    let writer = thread::spawn(move || {
+        let mut conn = Connection::open(&writer_path).unwrap();
+        conn.pragma_update(None, "synchronous", "NORMAL").unwrap();
+
+        let mut batch = Vec::with_capacity(2000);
+        let flush = |conn: &mut Connection, batch: &mut Vec<MergeResult>| {
+            let tx = conn.transaction().unwrap();
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO tiles (z, x, y, data) VALUES (?1, ?2, ?3, ?4)"
+                ).unwrap();
+                for r in batch.drain(..) {
+                    stmt.execute(params![r.z, r.x, r.y, r.data]).unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        };
+
+        for r in res_rx {
+            batch.push(r);
+            if batch.len() >= 2000 {
+                flush(&mut conn, &mut batch);
+            }
+        }
+        if !batch.is_empty() {
+            flush(&mut conn, &mut batch);
+        }
+    });
+
+    reader.join().unwrap();
+    for w in workers {
+        w.join().unwrap();
+    }
+    writer.join().unwrap();
+
+    Ok(())
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+/// Merge tiles from z=11 down to z=0 for the given DateHours.
+pub fn merge(db_path: &str, date_hours: DateHours) -> anyhow::Result<()> {
+    for z in (0..=10).rev() {
+        eprintln!("Merging level z={z} ...");
+        merge_level(db_path, z, date_hours)?;
+    }
+    Ok(())
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wimage::palette;
+
+    fn make_tile(value: u8) -> PalettedImage {
+        PalettedImage {
+            width: 1000,
+            height: 1000,
+            indices: vec![value; 1000 * 1000],
+        }
+    }
+
+ 
+    fn make_tilehistory_with_img(img: PalettedImage, date_hours: DateHours) -> Vec<u8> {
+        let mut th = TileHistory {
+            imgs: Default::default(),
+        };
+        th.set(date_hours, img).unwrap();
+        th.to_bytes()
+    }
+
+    // ─── empty_tile ───
+
+    #[test]
+    fn test_empty_tile_is_transparent() {
+        let t = empty_tile();
+        assert_eq!(t.width, 1000);
+        assert_eq!(t.height, 1000);
+        assert!(t.indices.iter().all(|&v| v == palette::TRANSPARENT));
+    }
+
+    // ─── stitch_and_downscale ───
+
+    #[test]
+    fn test_stitch_uniform_tile() {
+        let t = make_tile(42u8);
+        let result = stitch_and_downscale([t.clone(), t.clone(), t.clone(), t.clone()]);
+        assert_eq!(result.width, 1000);
+        assert_eq!(result.height, 1000);
+        // All pixels should be 42 (dominant colour).
+        assert!(result.indices.iter().all(|&v| v == 42));
+    }
+
+    #[test]
+    fn test_stitch_different_colors_quadrants() {
+        // Each quadrant has a different colour. After 2x2 downscale each output pixel
+        // comes from 4 source pixels (one from each quadrant in the center area).
+        // The weighted mode should pick the colour with the highest weight.
+        // For simple 4-different-colour blocks, each block has 4 unique colours.
+        let t0 = make_tile(1u8);  // BLACK
+        let t1 = make_tile(2u8);  // DARK_GRAY
+        let t2 = make_tile(3u8);  // GRAY
+        let t3 = make_tile(4u8);  // LIGHT_GRAY
+        let result = stitch_and_downscale([t0, t1, t2, t3]);
+        assert_eq!(result.width, 1000);
+        assert_eq!(result.height, 1000);
+        // Each output pixel is from a 2x2 block of the 2000x2000 canvas.
+        // The top-left quadrant of output comes from top-left of canvas (all BLACK=1).
+        // So top-left 500x500 should be BLACK.
+        // Similarly for other quadrants.
+        // Top-left output quadrant: source is 0..1000, 0..1000 of canvas → all tile[0] (BLACK=1)
+        for y in 0..500 {
+            for x in 0..500 {
+                assert_eq!(result.indices[y * 1000 + x], 1, "TL quadrant at ({x},{y})");
+            }
+        }
+        // Top-right output quadrant: source is 1000..2000, 0..1000 → all tile[1] (DARK_GRAY=2)
+        for y in 0..500 {
+            for x in 500..1000 {
+                assert_eq!(result.indices[y * 1000 + x], 2, "TR quadrant at ({x},{y})");
+            }
+        }
+        // Bottom-left: tile[2] (GRAY=3)
+        for y in 500..1000 {
+            for x in 0..500 {
+                assert_eq!(result.indices[y * 1000 + x], 3, "BL quadrant at ({x},{y})");
+            }
+        }
+        // Bottom-right: tile[3] (LIGHT_GRAY=4)
+        for y in 500..1000 {
+            for x in 500..1000 {
+                assert_eq!(result.indices[y * 1000 + x], 4, "BR quadrant at ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn test_stitch_with_transparent_tile() {
+        // One tile is transparent, others are BLACK. The BLACK pixels should dominate
+        // in blocks where they coexist with transparent.
+        let black = make_tile(palette::BLACK);
+        let trans = empty_tile();
+        let result = stitch_and_downscale([black.clone(), black.clone(), trans, black.clone()]);
+        assert_eq!(result.width, 1000);
+        assert_eq!(result.height, 1000);
+        // Top-left, top-right, bottom-right quadrants should be BLACK.
+        // Bottom-left quadrant: source is all transparent → should be transparent.
+        for y in 500..1000 {
+            for x in 0..500 {
+                assert_eq!(
+                    result.indices[y * 1000 + x],
+                    palette::TRANSPARENT,
+                    "BL quadrant should be transparent at ({x},{y})"
+                );
+            }
+        }
+    }
+
+    // ─── process_job ───
+
+    #[test]
+    fn test_process_job_all_tiles_present() {
+        let img = make_tile(42u8);
+        let blob = make_tilehistory_with_img(img, DateHours(1));
+
+        let job = MergeJob {
+            z: 10,
+            x: 0,
+            y: 0,
+            date_hours: DateHours(1),
+            tiles: [Some(blob.clone()), Some(blob.clone()), Some(blob.clone()), Some(blob.clone())],
+            existing: None,
+        };
+
+        let result = process_job(job);
+        assert_eq!(result.z, 10);
+        assert_eq!(result.x, 0);
+        assert_eq!(result.y, 0);
+        assert!(!result.data.is_empty());
+
+        // Verify the result TileHistory can be read back.
+        let th = TileHistory::from_bytes(&result.data).unwrap();
+        let merged = th.get(DateHours(1)).unwrap();
+        assert_eq!(merged.width, 1000);
+        assert_eq!(merged.height, 1000);
+        assert!(merged.indices.iter().all(|&v| v == 42));
+    }
+
+    #[test]
+    fn test_process_job_some_missing_tiles() {
+        let img = make_tile(42u8);
+        let blob = make_tilehistory_with_img(img, DateHours(1));
+
+        // Only top-left tile present; others missing → transparent.
+        let job = MergeJob {
+            z: 10,
+            x: 0,
+            y: 0,
+            date_hours: DateHours(1),
+            tiles: [Some(blob), None, None, None],
+            existing: None,
+        };
+
+        let result = process_job(job);
+        assert!(!result.data.is_empty(), "Should produce data even with missing tiles");
+
+        let th = TileHistory::from_bytes(&result.data).unwrap();
+        let merged = th.get(DateHours(1)).unwrap();
+        // Top-left quadrant should be 42, rest transparent.
+        for y in 0..500 {
+            for x in 0..500 {
+                assert_eq!(merged.indices[y * 1000 + x], 42, "TL at ({x},{y})");
+            }
+        }
+        for y in 500..1000 {
+            for x in 0..1000 {
+                assert_eq!(
+                    merged.indices[y * 1000 + x],
+                    palette::TRANSPARENT,
+                    "BL at ({x},{y})"
+                );
+            }
+        }
+        for y in 0..500 {
+            for x in 500..1000 {
+                assert_eq!(
+                    merged.indices[y * 1000 + x],
+                    palette::TRANSPARENT,
+                    "TR at ({x},{y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_process_job_all_missing_skips() {
+        let job = MergeJob {
+            z: 10,
+            x: 0,
+            y: 0,
+            date_hours: DateHours(1),
+            tiles: [None, None, None, None],
+            existing: None,
+        };
+
+        let result = process_job(job);
+        assert!(result.data.is_empty(), "All missing tiles should produce empty result");
+    }
+
+    #[test]
+    fn test_process_job_updates_existing_history() {
+        // Create an existing TileHistory with a version at DateHours(0).
+        let existing_img = make_tile(10u8);
+        let mut existing_th = TileHistory {
+            imgs: Default::default(),
+        };
+        existing_th.set(DateHours(0), existing_img).unwrap();
+        let existing_blob = existing_th.to_bytes();
+
+        let new_img = make_tile(42u8);
+        let new_blob = make_tilehistory_with_img(new_img, DateHours(1));
+
+        let job = MergeJob {
+            z: 10,
+            x: 0,
+            y: 0,
+            date_hours: DateHours(1),
+            tiles: [
+                Some(new_blob.clone()),
+                Some(new_blob.clone()),
+                Some(new_blob.clone()),
+                Some(new_blob.clone()),
+            ],
+            existing: Some(existing_blob),
+        };
+
+        let result = process_job(job);
+        let th = TileHistory::from_bytes(&result.data).unwrap();
+
+        // Should have both versions.
+        assert_eq!(th.list().len(), 2);
+
+        // Version at DateHours(0) should still be 10.
+        let v0 = th.get(DateHours(0)).unwrap();
+        assert!(v0.indices.iter().all(|&v| v == 10));
+
+        // Version at DateHours(1) should be 42.
+        let v1 = th.get(DateHours(1)).unwrap();
+        assert!(v1.indices.iter().all(|&v| v == 42));
+    }
+
+    // ─── make_weights ───
+
+    #[test]
+    fn test_weights_background_lower() {
+        let w = make_weights();
+        assert!(w[palette::TRANSPARENT as usize] < w[1 as usize], "TRANSPARENT should have lower weight");
+        assert!(w[palette::WHITE as usize] < w[1 as usize], "WHITE should have lower weight");
+    }
+
+    // ─── End-to-end with SQLite ───
+
+    fn create_test_db(
+        path: &str,
+    ) -> anyhow::Result<()> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS tiles (
+                z INTEGER NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                data BLOB NOT NULL,
+                PRIMARY KEY (z, x, y)
+            );
+            CREATE TABLE IF NOT EXISTS versions (
+                date INTEGER PRIMARY KEY,
+                original_file TEXT
+            );",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_merge_single_level() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        create_test_db(path).unwrap();
+
+        // Insert 4 tiles at z=11 (x=0..1, y=0..1) with a solid colour.
+        let img = make_tile(42u8);
+        let blob = make_tilehistory_with_img(img, DateHours(1));
+
+        let conn = Connection::open(path).unwrap();
+        for x in 0..=1 {
+            for y in 0..=1 {
+                conn.execute(
+                    "INSERT INTO tiles (z, x, y, data) VALUES (11, ?1, ?2, ?3)",
+                    params![x, y, blob.clone()],
+                )
+                .unwrap();
+            }
+        }
+        drop(conn);
+
+        // Run merge for level z=10 only (we'll test the full pipeline in another test).
+        merge_level(path, 10, DateHours(1)).unwrap();
+
+        // Verify: tile (10, 0, 0) should exist.
+        let conn = Connection::open(path).unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT data FROM tiles WHERE z = 10 AND x = 0 AND y = 0"
+        ).unwrap();
+        let data: Vec<u8> = stmt.query_row(params![], |r| r.get(0)).unwrap();
+        assert!(!data.is_empty());
+
+        let th = TileHistory::from_bytes(&data).unwrap();
+        let merged = th.get(DateHours(1)).unwrap();
+        assert_eq!(merged.width, 1000);
+        assert_eq!(merged.height, 1000);
+        assert!(merged.indices.iter().all(|&v| v == 42));
+    }
+
+    #[test]
+    fn test_merge_with_missing_parent_tiles() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        create_test_db(path).unwrap();
+
+        // Insert only 2 tiles at z=11: (0,0) and (1,0). Missing (0,1) and (1,1).
+        let img = make_tile(42u8);
+        let blob = make_tilehistory_with_img(img, DateHours(1));
+
+        let conn = Connection::open(path).unwrap();
+        conn.execute(
+            "INSERT INTO tiles (z, x, y, data) VALUES (11, 0, 0, ?1)",
+            params![blob.clone()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tiles (z, x, y, data) VALUES (11, 1, 0, ?1)",
+            params![blob],
+        )
+        .unwrap();
+        drop(conn);
+
+        merge_level(path, 10, DateHours(1)).unwrap();
+
+        // Verify: (10, 0, 0) exists with top half = 42, bottom half = transparent.
+        let conn = Connection::open(path).unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT data FROM tiles WHERE z = 10 AND x = 0 AND y = 0"
+        ).unwrap();
+        let data: Vec<u8> = stmt.query_row(params![], |r| r.get(0)).unwrap();
+        let th = TileHistory::from_bytes(&data).unwrap();
+        let merged = th.get(DateHours(1)).unwrap();
+
+        // Top half (y=0..500) should be 42.
+        for y in 0..500 {
+            for x in 0..1000 {
+                assert_eq!(merged.indices[y * 1000 + x], 42, "Top at ({x},{y})");
+            }
+        }
+        // Bottom half (y=500..1000) should be transparent.
+        for y in 500..1000 {
+            for x in 0..1000 {
+                assert_eq!(
+                    merged.indices[y * 1000 + x],
+                    palette::TRANSPARENT,
+                    "Bottom at ({x},{y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_merge_multi_level() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        create_test_db(path).unwrap();
+
+        // Insert 4 tiles at z=11 covering (0..=1, 0..=1).
+        let img = make_tile(42u8);
+        let blob = make_tilehistory_with_img(img, DateHours(1));
+
+        let conn = Connection::open(path).unwrap();
+        for x in 0..=1 {
+            for y in 0..=1 {
+                conn.execute(
+                    "INSERT INTO tiles (z, x, y, data) VALUES (11, ?1, ?2, ?3)",
+                    params![x, y, blob.clone()],
+                )
+                .unwrap();
+            }
+        }
+        drop(conn);
+
+        // Run full merge (z=10 down to z=0).
+        merge(path, DateHours(1)).unwrap();
+
+        // Verify all levels have tile (0, 0).
+        let conn = Connection::open(path).unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*) FROM tiles WHERE z <= 10 AND x = 0 AND y = 0"
+        ).unwrap();
+        let count: i64 = stmt.query_row(params![], |r| r.get(0)).unwrap();
+        assert_eq!(count, 11, "Expected 11 levels (z=0..10), got {count}");
+
+        // Verify each level produces a valid 1000x1000 image.
+        // The top-left corner must be 42 because the source tiles exist.
+        let mut stmt = conn.prepare(
+            "SELECT z, data FROM tiles WHERE x = 0 AND y = 0 AND z <= 10"
+        ).unwrap();
+        let rows: Vec<(i32, Vec<u8>)> = stmt
+            .query_map(params![], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (z, data) in rows {
+            let th = TileHistory::from_bytes(&data).unwrap();
+            let merged = th.get(DateHours(1)).unwrap();
+            assert_eq!(merged.width, 1000, "z={z}: width should be 1000");
+            assert_eq!(merged.height, 1000, "z={z}: height should be 1000");
+            // Top-left pixel must be 42 (source data is present).
+            assert_eq!(merged.indices[0], 42, "z={z}: top-left pixel should be 42");
+        }
+    }
+
+    #[test]
+    fn test_merge_no_tiles_at_source_level() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        create_test_db(path).unwrap();
+
+        // No tiles at z=11 → merge should complete without error.
+        merge(path, DateHours(1)).unwrap();
+
+        // No tiles should have been created.
+        let conn = Connection::open(path).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM tiles",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
+    }
+}

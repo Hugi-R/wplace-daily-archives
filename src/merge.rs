@@ -34,8 +34,7 @@ struct MergeResult {
 /// Weights for downscale_mode_weighted: visible colours win over background.
 fn make_weights() -> [u32; 256] {
     let mut w = [100u32; 256];
-    w[palette::TRANSPARENT as usize] = 5;
-    w[palette::WHITE as usize] = 10;
+    w[palette::TRANSPARENT as usize] = 0;
     w
 }
 

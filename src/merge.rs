@@ -1,13 +1,28 @@
-use std::thread;
-use std::time::Instant;
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
-use anyhow::Context;
-use crossbeam_channel::bounded;
+use anyhow::{anyhow, bail, Context, Result};
+use crossbeam_channel::{bounded, Receiver, SendTimeoutError, Sender};
 use rusqlite::{params, Connection};
 
 use wimage::palette;
-use wimage::tilehistory::DateHours;
-use wimage::{PalettedImage, tilehistory::TileHistory};
+use wimage::tilehistory::{DateHours, TileHistory};
+use wimage::PalettedImage;
+
+const TILE_SIZE: usize = 1000;
+const HALF_TILE_SIZE: usize = TILE_SIZE / 2;
+const TILE_PIXELS: usize = TILE_SIZE * TILE_SIZE;
+
+const STRIP_SIZE: i32 = 32;
+const WRITE_BATCH_SIZE: usize = 256;
+
+// Keep queue memory bounded. TileHistory blobs can be large.
+const DEFAULT_MAX_WORKERS: usize = 16;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -16,25 +31,24 @@ struct MergeJob {
     x: i32,
     y: i32,
     date_hours: DateHours,
-    /// 4 source TileHistory blobs from z-1: [TL, TR, BL, BR], None if tile missing in DB
-    tiles: [Option<Vec<u8>>; 4],
-    /// Existing TileHistory blob at (z, x, y) if any
+    tiles: [Option<Vec<u8>>; 4], // TL, TR, BL, BR
     existing: Option<Vec<u8>>,
 }
 
-/// Job for a "double merge" that skips an intermediate z-level.
-/// Reads 16 tiles from z-2 (a 4×4 grid), does two rounds of stitch+downscale,
-/// and writes directly to z (saving one intermediate z-level from storage).
 struct MergeJobDouble {
     z: i32,
     x: i32,
     y: i32,
     date_hours: DateHours,
-    /// 16 source TileHistory blobs from z-2, row-major (y then x):
-    /// [TL00, TL01, TL10, TL11,  TR00, TR01, TR10, TR11,  BL00, BL01, BL10, BL11,  BR00, BR01, BR10, BR11]
-    /// Each group of 4 corresponds to a quadrant at the intermediate level.
+
+    // True 4×4 row-major order:
+    //
+    //  0   1   2   3
+    //  4   5   6   7
+    //  8   9  10  11
+    // 12  13  14  15
+    //
     tiles: [Option<Vec<u8>>; 16],
-    /// Existing TileHistory blob at (z, x, y) if any
     existing: Option<Vec<u8>>,
 }
 
@@ -45,654 +59,824 @@ struct MergeResult {
     data: Vec<u8>,
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Weights for downscale_mode_weighted: visible colours win over background.
-fn make_weights() -> [u32; 256] {
-    let mut w = [100u32; 256];
-    w[palette::TRANSPARENT as usize] = 0;
-    w
+#[derive(Clone, Copy)]
+struct Bounds {
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
 }
 
-/// Return an empty 1000×1000 tile filled with TRANSPARENT.
+// ─── Palette / image helpers ─────────────────────────────────────────────────
+
+fn make_weights() -> [u32; 256] {
+    let mut weights = [100u32; 256];
+
+    // Fully transparent pixels should never win a mode calculation.
+    weights[palette::TRANSPARENT as usize] = 0;
+
+    // This allow the more colourful pixels to win over white/black in case of equal counts.
+    // Improving sligtly the visual.
+    weights[palette::WHITE as usize] = 90;
+    weights[palette::BLACK as usize] = 90;
+
+    weights
+}
+
+fn downscale_weights() -> &'static [u32; 256] {
+    static WEIGHTS: OnceLock<[u32; 256]> = OnceLock::new();
+    WEIGHTS.get_or_init(make_weights)
+}
+
 fn empty_tile() -> PalettedImage {
     PalettedImage {
-        width: 1000,
-        height: 1000,
-        indices: vec![palette::TRANSPARENT; 1000 * 1000],
+        width: TILE_SIZE,
+        height: TILE_SIZE,
+        indices: vec![palette::TRANSPARENT; TILE_PIXELS],
     }
 }
 
-/// Stitch four 1000×1000 tiles into a 2000×2000 canvas, then downscale to 1000×1000.
-fn stitch_and_downscale(tiles: [PalettedImage; 4]) -> PalettedImage {
-    let mut canvas = vec![palette::TRANSPARENT; 2000 * 2000];
-
-    // top-left  (0..1000, 0..1000)
-    for row in 0..1000 {
-        let src_off = row * 1000;
-        let dst_off = row * 2000;
-        canvas[dst_off..dst_off + 1000].copy_from_slice(&tiles[0].indices[src_off..src_off + 1000]);
-    }
-    // top-right  (1000..2000, 0..1000)
-    for row in 0..1000 {
-        let src_off = row * 1000;
-        let dst_off = row * 2000 + 1000;
-        canvas[dst_off..dst_off + 1000].copy_from_slice(&tiles[1].indices[src_off..src_off + 1000]);
-    }
-    // bottom-left  (0..1000, 1000..2000)
-    for row in 0..1000 {
-        let src_off = row * 1000;
-        let dst_off = (row + 1000) * 2000;
-        canvas[dst_off..dst_off + 1000].copy_from_slice(&tiles[2].indices[src_off..src_off + 1000]);
-    }
-    // bottom-right  (1000..2000, 1000..2000)
-    for row in 0..1000 {
-        let src_off = row * 1000;
-        let dst_off = (row + 1000) * 2000 + 1000;
-        canvas[dst_off..dst_off + 1000].copy_from_slice(&tiles[3].indices[src_off..src_off + 1000]);
+fn validate_tile(tile: &PalettedImage) -> Result<()> {
+    if tile.width as usize != TILE_SIZE
+        || tile.height as usize != TILE_SIZE
+        || tile.indices.len() != TILE_PIXELS
+    {
+        bail!(
+            "expected a {}×{} tile with {} pixels, got {}×{} with {} pixels",
+            TILE_SIZE,
+            TILE_SIZE,
+            TILE_PIXELS,
+            tile.width,
+            tile.height,
+            tile.indices.len(),
+        );
     }
 
-    let big = PalettedImage {
-        width: 2000,
-        height: 2000,
-        indices: canvas,
-    };
-
-    let weights = make_weights();
-    big.downscale_mode_weighted(&weights, 2)
+    Ok(())
 }
 
-// ─── Worker: process one job ────────────────────────────────────────────────
+/// Merge four optional 1000×1000 tiles into one 1000×1000 tile.
+///
+/// This is equivalent to:
+///
+/// 1. stitching into a 2000×2000 canvas;
+/// 2. downscaling by two.
+///
+/// But it avoids allocating the 4 MB canvas. Since 1000 is divisible by two,
+/// each source tile maps exactly to one 500×500 output quadrant.
+fn merge_four(tiles: [Option<PalettedImage>; 4]) -> Result<Option<PalettedImage>> {
+    if tiles.iter().all(Option::is_none) {
+        return Ok(None);
+    }
 
-/// Decode the 4 source tiles, stitch+downscale, update TileHistory, return result blob.
-fn process_job(job: MergeJob) -> MergeResult {
-    let date_hours = job.date_hours;
+    let mut output = empty_tile();
 
-    // Decode each source tile image at the target date_hours; missing → empty TRANSPARENT tile.
-    let decode_tile = |blob: Option<Vec<u8>>| -> PalettedImage {
-        match blob {
-            Some(data) => {
-                let th = TileHistory::from_bytes(&data).expect("valid TileHistory");
-                match th.get(date_hours) {
-                    Ok(img) => img,
-                    Err(_) => empty_tile(),
-                }
-            }
-            None => empty_tile(),
-        }
-    };
-
-    let tiles = [
-        decode_tile(job.tiles[0].clone()),
-        decode_tile(job.tiles[1].clone()),
-        decode_tile(job.tiles[2].clone()),
-        decode_tile(job.tiles[3].clone()),
-    ];
-
-    // Check if all tiles are empty (all missing + no data at date_hours)
-    let all_empty = tiles.iter().all(|t| {
-        t.indices.iter().all(|&v| v == palette::TRANSPARENT)
-    });
-    if all_empty {
-        // Nothing to merge; skip but return a valid result with empty TileHistory
-        return MergeResult {
-            z: job.z,
-            x: job.x,
-            y: job.y,
-            data: vec![],
+    for (quadrant, tile) in IntoIterator::into_iter(tiles).enumerate() {
+        let Some(tile) = tile else {
+            continue;
         };
+
+        validate_tile(&tile)?;
+
+        let reduced = tile.downscale_mode_weighted(downscale_weights(), 2);
+
+        if reduced.width as usize != HALF_TILE_SIZE
+            || reduced.height as usize != HALF_TILE_SIZE
+            || reduced.indices.len() != HALF_TILE_SIZE * HALF_TILE_SIZE
+        {
+            bail!("unexpected downscaled tile dimensions");
+        }
+
+        let (dst_x, dst_y) = match quadrant {
+            0 => (0, 0),                         // TL
+            1 => (HALF_TILE_SIZE, 0),            // TR
+            2 => (0, HALF_TILE_SIZE),            // BL
+            3 => (HALF_TILE_SIZE, HALF_TILE_SIZE), // BR
+            _ => unreachable!(),
+        };
+
+        for row in 0..HALF_TILE_SIZE {
+            let src_offset = row * HALF_TILE_SIZE;
+            let dst_offset = (dst_y + row) * TILE_SIZE + dst_x;
+
+            output.indices[dst_offset..dst_offset + HALF_TILE_SIZE]
+                .copy_from_slice(
+                    &reduced.indices[src_offset..src_offset + HALF_TILE_SIZE],
+                );
+        }
     }
 
-    let merged = stitch_and_downscale(tiles);
+    Ok(Some(output))
+}
 
-    // Build or update TileHistory
-    let mut th = match &job.existing {
-        Some(data) => TileHistory::from_bytes(data).expect("valid TileHistory"),
+// ─── TileHistory decoding / encoding ─────────────────────────────────────────
+
+fn decode_tile_for_date(
+    blob: Option<Vec<u8>>,
+    date_hours: DateHours,
+) -> Result<Option<PalettedImage>> {
+    let Some(blob) = blob else {
+        return Ok(None);
+    };
+
+    let history =
+        TileHistory::from_bytes(&blob).context("decode source TileHistory blob")?;
+
+    // Missing history at this date is intentionally treated as transparent.
+    let image = match history.get(date_hours) {
+        Ok(image) => image,
+        Err(_) => return Ok(None),
+    };
+
+    validate_tile(&image)?;
+
+    // Avoid downscaling an image that is entirely transparent.
+    if image
+        .indices
+        .iter()
+        .all(|&value| value == palette::TRANSPARENT)
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(image))
+}
+
+fn encode_merged_history(
+    z: i32,
+    x: i32,
+    y: i32,
+    date_hours: DateHours,
+    existing: Option<Vec<u8>>,
+    image: PalettedImage,
+) -> Result<MergeResult> {
+    let mut history = match existing {
+        Some(data) => TileHistory::from_bytes(&data)
+            .context("decode existing TileHistory blob")?,
         None => TileHistory {
             imgs: Default::default(),
         },
     };
 
-    th.set(date_hours, merged)
-        .expect("TileHistory::set should succeed");
+    history
+        .set(date_hours, image)
+        .context("write merged image into TileHistory")?;
 
-    MergeResult {
-        z: job.z,
-        x: job.x,
-        y: job.y,
-        data: th.to_bytes(),
+    Ok(MergeResult {
+        z,
+        x,
+        y,
+        data: history.to_bytes(),
+    })
+}
+
+// ─── Job processing ──────────────────────────────────────────────────────────
+
+fn process_job(job: MergeJob) -> Result<Option<MergeResult>> {
+    let MergeJob {
+        z,
+        x,
+        y,
+        date_hours,
+        tiles,
+        existing,
+    } = job;
+
+    let [tl, tr, bl, br] = tiles;
+
+    let merged = merge_four([
+        decode_tile_for_date(tl, date_hours)?,
+        decode_tile_for_date(tr, date_hours)?,
+        decode_tile_for_date(bl, date_hours)?,
+        decode_tile_for_date(br, date_hours)?,
+    ])?;
+
+    let Some(merged) = merged else {
+        return Ok(None);
+    };
+
+    Ok(Some(encode_merged_history(
+        z, x, y, date_hours, existing, merged,
+    )?))
+}
+
+fn process_job_double(job: MergeJobDouble) -> Result<Option<MergeResult>> {
+    let MergeJobDouble {
+        z,
+        x,
+        y,
+        date_hours,
+        tiles,
+        existing,
+    } = job;
+
+    let mut decoded: [Option<PalettedImage>; 16] =
+        std::array::from_fn(|_| None);
+
+    for (slot, blob) in decoded.iter_mut().zip(IntoIterator::into_iter(tiles)) {
+        *slot = decode_tile_for_date(blob, date_hours)?;
+    }
+
+    let [
+        t00, t01, t02, t03,
+        t10, t11, t12, t13,
+        t20, t21, t22, t23,
+        t30, t31, t32, t33,
+    ] = decoded;
+
+    // Correct grouping for true row-major source layout.
+    let top_left = merge_four([t00, t01, t10, t11])?;
+    let top_right = merge_four([t02, t03, t12, t13])?;
+    let bottom_left = merge_four([t20, t21, t30, t31])?;
+    let bottom_right = merge_four([t22, t23, t32, t33])?;
+
+    let merged = merge_four([
+        top_left,
+        top_right,
+        bottom_left,
+        bottom_right,
+    ])?;
+
+    let Some(merged) = merged else {
+        return Ok(None);
+    };
+
+    Ok(Some(encode_merged_history(
+        z, x, y, date_hours, existing, merged,
+    )?))
+}
+
+// ─── Generic job construction ───────────────────────────────────────────────
+
+trait TileMergeJob: Send + 'static + Sized {
+    const SOURCE_FACTOR: i32;
+    const SOURCE_Z_OFFSET: i32;
+
+    fn from_source_rows(
+        z: i32,
+        x: i32,
+        y: i32,
+        date_hours: DateHours,
+        source_x0: i32,
+        source_rows: &mut [HashMap<i32, Vec<u8>>],
+        existing: Option<Vec<u8>>,
+    ) -> Option<Self>;
+}
+
+impl TileMergeJob for MergeJob {
+    const SOURCE_FACTOR: i32 = 2;
+    const SOURCE_Z_OFFSET: i32 = 1;
+
+    fn from_source_rows(
+        z: i32,
+        x: i32,
+        y: i32,
+        date_hours: DateHours,
+        source_x0: i32,
+        source_rows: &mut [HashMap<i32, Vec<u8>>],
+        existing: Option<Vec<u8>>,
+    ) -> Option<Self> {
+        debug_assert_eq!(source_rows.len(), 2);
+
+        let tiles = [
+            source_rows[0].remove(&source_x0),
+            source_rows[0].remove(&(source_x0 + 1)),
+            source_rows[1].remove(&source_x0),
+            source_rows[1].remove(&(source_x0 + 1)),
+        ];
+
+        if tiles.iter().all(Option::is_none) {
+            return None;
+        }
+
+        Some(Self {
+            z,
+            x,
+            y,
+            date_hours,
+            tiles,
+            existing,
+        })
     }
 }
 
-/// Decode a source tile blob at the target date_hours; missing → empty TRANSPARENT tile.
-fn decode_tile_for_date(blob: Option<Vec<u8>>, date_hours: DateHours) -> PalettedImage {
-    match blob {
-        Some(data) => {
-            let th = TileHistory::from_bytes(&data).expect("valid TileHistory");
-            match th.get(date_hours) {
-                Ok(img) => img,
-                Err(_) => empty_tile(),
+impl TileMergeJob for MergeJobDouble {
+    const SOURCE_FACTOR: i32 = 4;
+    const SOURCE_Z_OFFSET: i32 = 2;
+
+    fn from_source_rows(
+        z: i32,
+        x: i32,
+        y: i32,
+        date_hours: DateHours,
+        source_x0: i32,
+        source_rows: &mut [HashMap<i32, Vec<u8>>],
+        existing: Option<Vec<u8>>,
+    ) -> Option<Self> {
+        debug_assert_eq!(source_rows.len(), 4);
+
+        let tiles = std::array::from_fn(|index| {
+            let row = index / 4;
+            let col = index % 4;
+            source_rows[row].remove(&(source_x0 + col as i32))
+        });
+
+        if tiles.iter().all(Option::is_none) {
+            return None;
+        }
+
+        Some(Self {
+            z,
+            x,
+            y,
+            date_hours,
+            tiles,
+            existing,
+        })
+    }
+}
+
+// ─── SQLite helpers ──────────────────────────────────────────────────────────
+
+fn open_db(path: &str) -> Result<Connection> {
+    let conn = Connection::open(path)
+        .with_context(|| format!("open database {path}"))?;
+
+    conn.busy_timeout(Duration::from_secs(30))
+        .context("set SQLite busy timeout")?;
+
+    Ok(conn)
+}
+
+fn checked_i32(value: i64, name: &str) -> Result<i32> {
+    i32::try_from(value)
+        .with_context(|| format!("{name}={value} does not fit in i32"))
+}
+
+fn target_bounds(
+    db_path: &str,
+    source_z: i32,
+    source_factor: i32,
+) -> Result<Option<Bounds>> {
+    let conn = open_db(db_path)?;
+
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .context("enable WAL mode")?;
+
+    let (min_x, max_x, min_y, max_y): (
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    ) = conn.query_row(
+        "SELECT MIN(x), MAX(x), MIN(y), MAX(y)
+         FROM tiles
+         WHERE z = ?1",
+        params![source_z],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        },
+    )?;
+
+    let (Some(min_x), Some(max_x), Some(min_y), Some(max_y)) =
+        (min_x, max_x, min_y, max_y)
+    else {
+        return Ok(None);
+    };
+
+    let divisor = i64::from(source_factor);
+
+    Ok(Some(Bounds {
+        min_x: checked_i32(min_x.div_euclid(divisor), "min_x")?,
+        max_x: checked_i32(max_x.div_euclid(divisor), "max_x")?,
+        min_y: checked_i32(min_y.div_euclid(divisor), "min_y")?,
+        max_y: checked_i32(max_y.div_euclid(divisor), "max_y")?,
+    }))
+}
+
+// ─── Reader ──────────────────────────────────────────────────────────────────
+
+fn send_with_cancel<T: Send>(
+    tx: &Sender<T>,
+    cancel: &AtomicBool,
+    value: T,
+) -> Result<bool> {
+    let mut value = value;
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+
+        match tx.send_timeout(value, Duration::from_millis(100)) {
+            Ok(()) => return Ok(true),
+            Err(SendTimeoutError::Timeout(returned)) => {
+                value = returned;
+            }
+            Err(SendTimeoutError::Disconnected(_)) => {
+                return Ok(false);
             }
         }
-        None => empty_tile(),
     }
 }
 
-/// Process a double-merge job: 16 tiles from z-2 → two rounds of stitch+downscale → z.
-fn process_job_double(job: MergeJobDouble) -> MergeResult {
-    let date_hours = job.date_hours;
+fn read_jobs<J: TileMergeJob>(
+    db_path: &str,
+    bounds: Bounds,
+    z: i32,
+    source_z: i32,
+    date_hours: DateHours,
+    job_tx: Sender<J>,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let conn = open_db(db_path)?;
 
-    // Decode all 16 source tiles.
-    let tiles: Vec<PalettedImage> = job.tiles.iter()
-        .map(|t| decode_tile_for_date(t.clone(), date_hours))
+    let mut fetch_source = conn.prepare_cached(
+        "SELECT x, data
+         FROM tiles
+         WHERE z = ?1
+           AND y = ?2
+           AND x >= ?3
+           AND x <= ?4",
+    )?;
+
+    let mut fetch_existing = conn.prepare_cached(
+        "SELECT x, data
+         FROM tiles
+         WHERE z = ?1
+           AND y = ?2
+           AND x >= ?3
+           AND x <= ?4",
+    )?;
+
+    for parent_y in bounds.min_y..=bounds.max_y {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        let source_y0 = J::SOURCE_FACTOR * parent_y;
+
+        for strip_start in
+            (bounds.min_x..=bounds.max_x).step_by(STRIP_SIZE as usize)
+        {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+
+            let strip_end =
+                (strip_start + STRIP_SIZE - 1).min(bounds.max_x);
+
+            let source_x_min = J::SOURCE_FACTOR * strip_start;
+            let source_x_max =
+                J::SOURCE_FACTOR * strip_end + J::SOURCE_FACTOR - 1;
+
+            let parent_count = (strip_end - strip_start + 1) as usize;
+            let source_capacity =
+                parent_count * J::SOURCE_FACTOR as usize;
+
+            let mut source_rows: Vec<HashMap<i32, Vec<u8>>> =
+                (0..J::SOURCE_FACTOR)
+                    .map(|_| HashMap::with_capacity(source_capacity))
+                    .collect();
+
+            for (row_offset, row_map) in source_rows.iter_mut().enumerate() {
+                let source_y = source_y0 + row_offset as i32;
+
+                let mut rows = fetch_source.query(params![
+                    source_z,
+                    source_y,
+                    source_x_min,
+                    source_x_max,
+                ])?;
+
+                while let Some(row) = rows.next()? {
+                    let source_x: i32 = row.get(0)?;
+                    let data: Vec<u8> = row.get(1)?;
+                    row_map.insert(source_x, data);
+                }
+            }
+
+            let mut existing =
+                HashMap::<i32, Vec<u8>>::with_capacity(parent_count);
+
+            {
+                let mut rows = fetch_existing.query(params![
+                    z,
+                    parent_y,
+                    strip_start,
+                    strip_end,
+                ])?;
+
+                while let Some(row) = rows.next()? {
+                    let x: i32 = row.get(0)?;
+                    let data: Vec<u8> = row.get(1)?;
+                    existing.insert(x, data);
+                }
+            }
+
+            for parent_x in strip_start..=strip_end {
+                let source_x0 = J::SOURCE_FACTOR * parent_x;
+
+                let Some(job) = J::from_source_rows(
+                    z,
+                    parent_x,
+                    parent_y,
+                    date_hours,
+                    source_x0,
+                    &mut source_rows,
+                    existing.remove(&parent_x),
+                ) else {
+                    continue;
+                };
+
+                if !send_with_cancel(&job_tx, cancel, job)? {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ─── Worker / writer pipeline ────────────────────────────────────────────────
+
+fn merge_worker_count() -> usize {
+    let automatic = thread::available_parallelism()
+        .map(|count| count.get() - 2) // keep some headroom for reader/writer threads
+        .unwrap_or(1)
+        .min(DEFAULT_MAX_WORKERS)
+        .max(1);
+
+    std::env::var("WIMAGE_MERGE_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&count| count > 0)
+        .unwrap_or(automatic)
+}
+
+fn flush_batch(
+    conn: &mut Connection,
+    batch: &mut Vec<MergeResult>,
+) -> Result<()> {
+    let tx = conn.transaction().context("start write transaction")?;
+
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO tiles (z, x, y, data)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(z, x, y)
+             DO UPDATE SET data = excluded.data",
+        )?;
+
+        for result in batch.drain(..) {
+            stmt.execute(params![
+                result.z,
+                result.x,
+                result.y,
+                result.data,
+            ])
+            .with_context(|| {
+                format!(
+                    "write tile z={}, x={}, y={}",
+                    result.z, result.x, result.y
+                )
+            })?;
+        }
+    }
+
+    tx.commit().context("commit tile write transaction")?;
+    Ok(())
+}
+
+fn writer_loop(db_path: &str, result_rx: Receiver<MergeResult>) -> Result<()> {
+    let mut conn = open_db(db_path)?;
+
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .context("set SQLite synchronous=NORMAL")?;
+
+    let start = Instant::now();
+    let mut last_report = start;
+    let mut written = 0usize;
+
+    let mut batch = Vec::with_capacity(WRITE_BATCH_SIZE);
+
+    for result in result_rx {
+        batch.push(result);
+        written += 1;
+
+        if batch.len() >= WRITE_BATCH_SIZE {
+            flush_batch(&mut conn, &mut batch)?;
+
+            if last_report.elapsed() >= Duration::from_secs(10) {
+                let elapsed = start.elapsed().as_secs_f64().max(0.001);
+                eprintln!(
+                    "  {} tiles written in {:.1}s ({:.0} tiles/s)",
+                    written,
+                    elapsed,
+                    written as f64 / elapsed,
+                );
+                last_report = Instant::now();
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        flush_batch(&mut conn, &mut batch)?;
+    }
+
+    let elapsed = start.elapsed().as_secs_f64().max(0.001);
+    eprintln!(
+        "  {} tiles written in {:.1}s ({:.0} tiles/s)",
+        written,
+        elapsed,
+        written as f64 / elapsed,
+    );
+
+    Ok(())
+}
+
+fn join_thread(
+    thread: JoinHandle<Result<()>>,
+    name: &str,
+) -> Result<()> {
+    match thread.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("{name} thread panicked")),
+    }
+}
+
+fn run_pipeline<J, Reader>(
+    db_path: &str,
+    reader_fn: Reader,
+    process: fn(J) -> Result<Option<MergeResult>>,
+) -> Result<()>
+where
+    J: Send + 'static,
+    Reader: FnOnce(Sender<J>, Arc<AtomicBool>) -> Result<()> + Send + 'static,
+{
+    let worker_count = merge_worker_count();
+    let channel_capacity = (worker_count * 2).max(4);
+
+    let (job_tx, job_rx) = bounded::<J>(channel_capacity);
+    let (result_tx, result_rx) =
+        bounded::<MergeResult>(channel_capacity);
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+
+    let writer_path = db_path.to_owned();
+    let writer_cancel = Arc::clone(&cancelled);
+    let writer = thread::spawn(move || {
+        let result = writer_loop(&writer_path, result_rx);
+
+        if result.is_err() {
+            writer_cancel.store(true, Ordering::Relaxed);
+        }
+
+        result
+    });
+
+    let processor = Arc::new(process);
+    let mut workers = Vec::with_capacity(worker_count);
+
+    for _ in 0..worker_count {
+        let job_rx = job_rx.clone();
+        let result_tx = result_tx.clone();
+        let processor = Arc::clone(&processor);
+        let cancel = Arc::clone(&cancelled);
+
+        workers.push(thread::spawn(move || -> Result<()> {
+            for job in job_rx {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let result = match processor(job) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        cancel.store(true, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                };
+
+                if let Some(result) = result {
+                    if result_tx.send(result).is_err() {
+                        cancel.store(true, Ordering::Relaxed);
+                        bail!("writer thread stopped receiving results");
+                    }
+                }
+            }
+
+            Ok(())
+        }));
+    }
+
+    // Critical: without this, workers never observe a disconnected job channel.
+    drop(job_rx);
+
+    // Only worker clones should keep the result channel alive.
+    drop(result_tx);
+
+    let reader_cancel = Arc::clone(&cancelled);
+    let reader = thread::spawn(move || {
+        let result = reader_fn(job_tx, Arc::clone(&reader_cancel));
+
+        if result.is_err() {
+            reader_cancel.store(true, Ordering::Relaxed);
+        }
+
+        result
+    });
+
+    let reader_result = join_thread(reader, "reader");
+    let worker_results: Vec<Result<()>> = workers
+        .into_iter()
+        .map(|worker| join_thread(worker, "worker"))
         .collect();
+    let writer_result = join_thread(writer, "writer");
 
-    // Check if all tiles are empty.
-    let all_empty = tiles.iter().all(|t| {
-        t.indices.iter().all(|&v| v == palette::TRANSPARENT)
-    });
-    if all_empty {
-        return MergeResult {
-            z: job.z,
-            x: job.x,
-            y: job.y,
-            data: vec![],
-        };
+    reader_result?;
+    writer_result?;
+
+    for result in worker_results {
+        result?;
     }
 
-    // Round 1: 16 tiles (4×4 at z-2) → 4 intermediate tiles (2×2 at z-1).
-    // Layout of 16 tiles (row-major):
-    //   [0,  1,  4,  5]     [ 8,  9, 12, 13]
-    //   [2,  3,  6,  7]     [10, 11, 14, 15]
-    //
-    // Quadrants at intermediate level:
-    //   TL: tiles[0..4]  (z-1 children for TL quadrant)
-    //   TR: tiles[4..8]
-    //   BL: tiles[8..12]
-    //   BR: tiles[12..16]
-    let intermediates: [PalettedImage; 4] = [
-        stitch_and_downscale([
-            tiles[0].clone(), tiles[1].clone(),
-            tiles[2].clone(), tiles[3].clone(),
-        ]),
-        stitch_and_downscale([
-            tiles[4].clone(), tiles[5].clone(),
-            tiles[6].clone(), tiles[7].clone(),
-        ]),
-        stitch_and_downscale([
-            tiles[8].clone(), tiles[9].clone(),
-            tiles[10].clone(), tiles[11].clone(),
-        ]),
-        stitch_and_downscale([
-            tiles[12].clone(), tiles[13].clone(),
-            tiles[14].clone(), tiles[15].clone(),
-        ]),
-    ];
+    Ok(())
+}
 
-    // Round 2: 4 intermediate tiles → final tile at z.
-    let merged = stitch_and_downscale(intermediates);
+// ─── Merge levels ────────────────────────────────────────────────────────────
 
-    // Build or update TileHistory.
-    let mut th = match &job.existing {
-        Some(data) => TileHistory::from_bytes(data).expect("valid TileHistory"),
-        None => TileHistory {
-            imgs: Default::default(),
-        },
+fn merge_with<J: TileMergeJob>(
+    db_path: &str,
+    z: i32,
+    date_hours: DateHours,
+    process: fn(J) -> Result<Option<MergeResult>>,
+) -> Result<()> {
+    let source_z = z + J::SOURCE_Z_OFFSET;
+
+    let Some(bounds) =
+        target_bounds(db_path, source_z, J::SOURCE_FACTOR)?
+    else {
+        return Ok(());
     };
 
-    th.set(date_hours, merged)
-        .expect("TileHistory::set should succeed");
+    let reader_path = db_path.to_owned();
 
-    MergeResult {
-        z: job.z,
-        x: job.x,
-        y: job.y,
-        data: th.to_bytes(),
-    }
+    run_pipeline(
+        db_path,
+        move |job_tx, cancelled| {
+            read_jobs::<J>(
+                &reader_path,
+                bounds,
+                z,
+                source_z,
+                date_hours,
+                job_tx,
+                &cancelled,
+            )
+        },
+        process,
+    )
 }
 
-// ─── Pipeline ───────────────────────────────────────────────────────────────
-
-/// Run the full merge pipeline for a single z-level.
-///
-/// The reader streams source tiles in x-strips (50 parent tiles at a time) to
-/// keep memory bounded — only ~250 TileHistory blobs are held in memory
-/// simultaneously, regardless of map size.
-fn merge_level(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<()> {
-    let source_z = z + 1;
-
-    // Open a connection to discover the source tile bounding box.
-    let conn = Connection::open(db_path).context("open db")?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tiles WHERE z = ?1",
-        params![source_z],
-        |r| r.get(0),
-    )?;
-    if count == 0 {
-        return Ok(());
-    }
-
-    let (min_x, max_x, min_y, max_y) = conn.query_row(
-        "SELECT MIN(x), MAX(x), MIN(y), MAX(y) FROM tiles WHERE z = ?1",
-        params![source_z],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
-    )?;
-
-    // Parent tile range (cast to i32; tile coords are well within i32 range).
-    let parent_min_x = (min_x / 2) as i32;
-    let parent_max_x = (max_x / 2) as i32;
-    let parent_min_y = (min_y / 2) as i32;
-    let parent_max_y = (max_y / 2) as i32;
-
-    drop(conn); // bounding-box query done; reader will open its own connection.
-
-    // Channels.
-    let (job_tx, job_rx) = bounded::<MergeJob>(2000);
-    let (res_tx, res_rx) = bounded::<MergeResult>(2000);
-
-    let db_path = db_path.to_string();
-
-    // ── Reader thread: streams jobs from SQLite in x-strips ──
-    const STRIP_SIZE: i32 = 50; // parent x-values per strip
-
-    let reader_path = db_path.clone();
-    let reader = thread::spawn(move || {
-        let conn = Connection::open(&reader_path).expect("reader open db");
-        conn.pragma_update(None, "journal_mode", "WAL").expect("WAL mode");
-
-        let mut fetch_source = conn.prepare_cached(
-            "SELECT x, y, data FROM tiles WHERE z = ?1 AND y = ?2 AND x >= ?3 AND x <= ?4",
-        ).expect("prepare fetch_source");
-
-        let mut fetch_existing = conn.prepare_cached(
-            "SELECT x, y, data FROM tiles WHERE z = ?1 AND y = ?2 AND x >= ?3 AND x <= ?4",
-        ).expect("prepare fetch_existing");
-
-        for py in parent_min_y..=parent_max_y {
-            let sy0 = 2 * py;
-            let sy1 = 2 * py + 1;
-
-            // Process parent x in strips.
-            for strip_start in (parent_min_x..=parent_max_x).step_by(STRIP_SIZE as usize) {
-                let strip_end = std::cmp::min(strip_start + STRIP_SIZE - 1, parent_max_x);
-
-                // Source x range needed: 2*strip_start .. 2*strip_end+1.
-                let sx_min = 2 * strip_start;
-                let sx_max = 2 * strip_end + 1;
-
-                // Query source tiles for this strip (two y-rows).
-                let mut source_map: std::collections::HashMap<(i32, i32), Vec<u8>> =
-                    std::collections::HashMap::new();
-
-                for &sy in &[sy0, sy1] {
-                    let rows = fetch_source.query_map(
-                        params![source_z, sy, sx_min, sx_max],
-                        |r| Ok((r.get::<_, i32>(0).unwrap(), r.get::<_, i32>(1).unwrap(), r.get::<_, Vec<u8>>(2).unwrap())),
-                    ).expect("query source tiles");
-
-                    for row in rows {
-                        let (x, y, data) = row.expect("row");
-                        source_map.insert((x, y), data);
-                    }
-                }
-
-                // Query existing tiles for this strip.
-                let mut existing_map: std::collections::HashMap<(i32, i32), Vec<u8>> =
-                    std::collections::HashMap::new();
-
-                let rows = fetch_existing.query_map(
-                    params![z, py, strip_start, strip_end],
-                    |r| Ok((r.get::<_, i32>(0).unwrap(), r.get::<_, i32>(1).unwrap(), r.get::<_, Vec<u8>>(2).unwrap())),
-                ).expect("query existing tiles");
-
-                for row in rows {
-                    let (x, y, data) = row.expect("row");
-                    existing_map.insert((x, y), data);
-                }
-
-                // Assemble and send jobs for this strip.
-                for px in strip_start..=strip_end {
-                    let sx0 = 2 * px;
-                    let sx1 = sx0 + 1;
-
-                    let tl = source_map.get(&(sx0, sy0)).cloned();
-                    let tr = source_map.get(&(sx1, sy0)).cloned();
-                    let bl = source_map.get(&(sx0, sy1)).cloned();
-                    let br = source_map.get(&(sx1, sy1)).cloned();
-
-                    if tl.is_none() && tr.is_none() && bl.is_none() && br.is_none() {
-                        continue;
-                    }
-
-                    let existing = existing_map.get(&(px, py)).cloned();
-
-                    job_tx.send(MergeJob {
-                        z,
-                        x: px,
-                        y: py,
-                        date_hours,
-                        tiles: [tl, tr, bl, br],
-                        existing,
-                    }).expect("send job");
-                }
-
-                // source_map and existing_map are dropped here — memory freed per strip.
-            }
-        }
-    });
-
-    // ── Worker threads ──
-    let n_workers = num_cpus::get();
-    let mut workers = Vec::new();
-    for _ in 0..n_workers {
-        let job_rx = job_rx.clone();
-        let res_tx = res_tx.clone();
-        workers.push(thread::spawn(move || {
-            for job in job_rx {
-                let result = process_job(job);
-                if !result.data.is_empty() {
-                    res_tx.send(result).unwrap();
-                }
-            }
-        }));
-    }
-    drop(res_tx);
-
-    // ── Writer thread: batched inserts/updates ──
-    let writer = thread::spawn(move || {
-        let mut conn = Connection::open(&db_path).unwrap();
-        conn.pragma_update(None, "synchronous", "NORMAL").unwrap();
-
-        let mut batch = Vec::with_capacity(2000);
-        let flush = |conn: &mut Connection, batch: &mut Vec<MergeResult>| {
-            let tx = conn.transaction().unwrap();
-            {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT OR REPLACE INTO tiles (z, x, y, data) VALUES (?1, ?2, ?3, ?4)",
-                ).unwrap();
-                for r in batch.drain(..) {
-                    stmt.execute(params![r.z, r.x, r.y, r.data]).unwrap();
-                }
-            }
-            tx.commit().unwrap();
-        };
-
-        // Metrics
-        let start = Instant::now();
-        let mut processed: usize = 0;
-        let mut last_print = start;
-
-        for r in res_rx {
-            batch.push(r);
-            processed += 1;
-            if batch.len() >= 2000 {
-                flush(&mut conn, &mut batch);
-                if last_print.elapsed() >= std::time::Duration::from_secs(10) {
-                    let elapsed = start.elapsed();
-                    let rate = processed as f64 / elapsed.as_secs_f64();
-                    eprintln!(
-                        "  {} jobs processed in {:.1}s ({:.0} jobs/s)",
-                        processed, elapsed.as_secs_f64(), rate
-                    );
-                    last_print = Instant::now();
-                }
-            }
-        }
-        if !batch.is_empty() {
-            flush(&mut conn, &mut batch);
-        }
-
-        // Final metrics
-        let elapsed = start.elapsed();
-        let rate = processed as f64 / elapsed.as_secs_f64();
-        eprintln!(
-            "  {} jobs processed in {:.1}s ({:.0} jobs/s)",
-            processed, elapsed.as_secs_f64(), rate
-        );
-    });
-
-    reader.join().unwrap();
-    for w in workers {
-        w.join().unwrap();
-    }
-    writer.join().unwrap();
-
-    Ok(())
+fn merge_level(
+    db_path: &str,
+    z: i32,
+    date_hours: DateHours,
+) -> Result<()> {
+    merge_with::<MergeJob>(db_path, z, date_hours, process_job)
 }
 
-/// Like [`merge_level`], but skips an intermediate z-level.
-///
-/// Reads 16 source tiles from z-2 (a 4×4 grid), does two rounds of
-/// stitch+downscale, and writes directly to z. This saves storage by
-/// never persisting the skipped level.
-fn merge_level_double(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<()> {
-    let source_z = z + 2;
-
-    let conn = Connection::open(db_path).context("open db")?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tiles WHERE z = ?1",
-        params![source_z],
-        |r| r.get(0),
-    )?;
-    if count == 0 {
-        return Ok(());
-    }
-
-    let (min_x, max_x, min_y, max_y) = conn.query_row(
-        "SELECT MIN(x), MAX(x), MIN(y), MAX(y) FROM tiles WHERE z = ?1",
-        params![source_z],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
-    )?;
-
-    // Grandparent tile range (divide by 4).
-    let gp_min_x = (min_x / 4) as i32;
-    let gp_max_x = (max_x / 4) as i32;
-    let gp_min_y = (min_y / 4) as i32;
-    let gp_max_y = (max_y / 4) as i32;
-
-    drop(conn);
-
-    let (job_tx, job_rx) = bounded::<MergeJobDouble>(2000);
-    let (res_tx, res_rx) = bounded::<MergeResult>(2000);
-
-    let db_path = db_path.to_string();
-
-    // ── Reader thread ──
-    const STRIP_SIZE: i32 = 50;
-
-    let reader_path = db_path.clone();
-    let reader = thread::spawn(move || {
-        let conn = Connection::open(&reader_path).expect("reader open db");
-        conn.pragma_update(None, "journal_mode", "WAL").expect("WAL mode");
-
-        let mut fetch_source = conn.prepare_cached(
-            "SELECT x, y, data FROM tiles WHERE z = ?1 AND y = ?2 AND x >= ?3 AND x <= ?4",
-        ).expect("prepare fetch_source");
-
-        let mut fetch_existing = conn.prepare_cached(
-            "SELECT x, y, data FROM tiles WHERE z = ?1 AND y = ?2 AND x >= ?3 AND x <= ?4",
-        ).expect("prepare fetch_existing");
-
-        for gpy in gp_min_y..=gp_max_y {
-            let sy0 = 4 * gpy;
-            let sy1 = sy0 + 1;
-            let sy2 = sy0 + 2;
-            let sy3 = sy0 + 3;
-
-            for strip_start in (gp_min_x..=gp_max_x).step_by(STRIP_SIZE as usize) {
-                let strip_end = std::cmp::min(strip_start + STRIP_SIZE - 1, gp_max_x);
-
-                // Source x range: 4*strip_start .. 4*strip_end+3.
-                let sx_min = 4 * strip_start;
-                let sx_max = 4 * strip_end + 3;
-
-                // Query source tiles for this strip (four y-rows).
-                let mut source_map: std::collections::HashMap<(i32, i32), Vec<u8>> =
-                    std::collections::HashMap::new();
-
-                for &sy in &[sy0, sy1, sy2, sy3] {
-                    let rows = fetch_source.query_map(
-                        params![source_z, sy, sx_min, sx_max],
-                        |r| Ok((r.get::<_, i32>(0).unwrap(), r.get::<_, i32>(1).unwrap(), r.get::<_, Vec<u8>>(2).unwrap())),
-                    ).expect("query source tiles");
-
-                    for row in rows {
-                        let (x, y, data) = row.expect("row");
-                        source_map.insert((x, y), data);
-                    }
-                }
-
-                // Query existing tiles for this strip.
-                let mut existing_map: std::collections::HashMap<(i32, i32), Vec<u8>> =
-                    std::collections::HashMap::new();
-
-                let rows = fetch_existing.query_map(
-                    params![z, gpy, strip_start, strip_end],
-                    |r| Ok((r.get::<_, i32>(0).unwrap(), r.get::<_, i32>(1).unwrap(), r.get::<_, Vec<u8>>(2).unwrap())),
-                ).expect("query existing tiles");
-
-                for row in rows {
-                    let (x, y, data) = row.expect("row");
-                    existing_map.insert((x, y), data);
-                }
-
-                // Assemble and send jobs.
-                for gpx in strip_start..=strip_end {
-                    let sx0 = 4 * gpx;
-
-                    // 16 tiles in row-major order:
-                    // Row 0: (sx0, sy0), (sx0+1, sy0), (sx0+2, sy0), (sx0+3, sy0)
-                    // Row 1: (sx0, sy1), (sx0+1, sy1), (sx0+2, sy1), (sx0+3, sy1)
-                    // Row 2: (sx0, sy2), (sx0+1, sy2), (sx0+2, sy2), (sx0+3, sy2)
-                    // Row 3: (sx0, sy3), (sx0+1, sy3), (sx0+2, sy3), (sx0+3, sy3)
-                    let mut tiles: [Option<Vec<u8>>; 16] = Default::default();
-                    let mut any = false;
-                    for dy in 0..4i32 {
-                        for dx in 0..4i32 {
-                            let idx = (dy * 4 + dx) as usize;
-                            tiles[idx] = source_map.get(&(sx0 + dx, sy0 + dy)).cloned();
-                            if tiles[idx].is_some() {
-                                any = true;
-                            }
-                        }
-                    }
-
-                    if !any {
-                        continue;
-                    }
-
-                    let existing = existing_map.get(&(gpx, gpy)).cloned();
-
-                    job_tx.send(MergeJobDouble {
-                        z,
-                        x: gpx,
-                        y: gpy,
-                        date_hours,
-                        tiles,
-                        existing,
-                    }).expect("send job");
-                }
-            }
-        }
-    });
-
-    // ── Worker threads ──
-    let n_workers = num_cpus::get();
-    let mut workers = Vec::new();
-    for _ in 0..n_workers {
-        let job_rx = job_rx.clone();
-        let res_tx = res_tx.clone();
-        workers.push(thread::spawn(move || {
-            for job in job_rx {
-                let result = process_job_double(job);
-                if !result.data.is_empty() {
-                    res_tx.send(result).unwrap();
-                }
-            }
-        }));
-    }
-    drop(res_tx);
-
-    // ── Writer thread ──
-    let writer = thread::spawn(move || {
-        let mut conn = Connection::open(&db_path).unwrap();
-        conn.pragma_update(None, "synchronous", "NORMAL").unwrap();
-
-        let mut batch = Vec::with_capacity(2000);
-        let flush = |conn: &mut Connection, batch: &mut Vec<MergeResult>| {
-            let tx = conn.transaction().unwrap();
-            {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT OR REPLACE INTO tiles (z, x, y, data) VALUES (?1, ?2, ?3, ?4)",
-                ).unwrap();
-                for r in batch.drain(..) {
-                    stmt.execute(params![r.z, r.x, r.y, r.data]).unwrap();
-                }
-            }
-            tx.commit().unwrap();
-        };
-
-        let start = Instant::now();
-        let mut processed: usize = 0;
-        let mut last_print = start;
-
-        for r in res_rx {
-            batch.push(r);
-            processed += 1;
-            if batch.len() >= 2000 {
-                flush(&mut conn, &mut batch);
-                if last_print.elapsed() >= std::time::Duration::from_secs(10) {
-                    let elapsed = start.elapsed();
-                    let rate = processed as f64 / elapsed.as_secs_f64();
-                    eprintln!(
-                        "  {} jobs processed in {:.1}s ({:.0} jobs/s)",
-                        processed, elapsed.as_secs_f64(), rate
-                    );
-                    last_print = Instant::now();
-                }
-            }
-        }
-        if !batch.is_empty() {
-            flush(&mut conn, &mut batch);
-        }
-
-        let elapsed = start.elapsed();
-        let rate = processed as f64 / elapsed.as_secs_f64();
-        eprintln!(
-            "  {} jobs processed in {:.1}s ({:.0} jobs/s)",
-            processed, elapsed.as_secs_f64(), rate
-        );
-    });
-
-    reader.join().unwrap();
-    for w in workers {
-        w.join().unwrap();
-    }
-    writer.join().unwrap();
-
-    Ok(())
+fn merge_level_double(
+    db_path: &str,
+    z: i32,
+    date_hours: DateHours,
+) -> Result<()> {
+    merge_with::<MergeJobDouble>(
+        db_path,
+        z,
+        date_hours,
+        process_job_double,
+    )
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/// Merge tiles from z=11 down to z=0 for the given DateHours.
-///
-/// z=10 is skipped (not stored) — z=9 is produced via a double-merge
-/// directly from z=11 to save storage.
-pub fn merge(db_path: &str, date_hours: DateHours) -> anyhow::Result<()> {
-    // z=9: double-merge from z=11 (skips storing z=10).
+pub fn merge(db_path: &str, date_hours: DateHours) -> Result<()> {
     eprintln!("Merging level z=9 (double from z=11) ...");
     merge_level_double(db_path, 9, date_hours)?;
 
-    // z=8 .. z=0: normal merge from z+1.
     for z in (0..=8).rev() {
         eprintln!("Merging level z={z} ...");
         merge_level(db_path, z, date_hours)?;
     }
+
     Ok(())
 }
 
@@ -703,188 +887,122 @@ mod tests {
     use super::*;
     use wimage::palette;
 
+    // ─── Helpers ─────────────────────────────────────────────────────────────
+
     fn make_tile(value: u8) -> PalettedImage {
         PalettedImage {
-            width: 1000,
-            height: 1000,
-            indices: vec![value; 1000 * 1000],
+            width: TILE_SIZE,
+            height: TILE_SIZE,
+            indices: vec![value; TILE_PIXELS],
         }
     }
 
- 
-    fn make_tilehistory_with_img(img: PalettedImage, date_hours: DateHours) -> Vec<u8> {
+    fn history_with(img: PalettedImage, date: DateHours) -> Vec<u8> {
         let mut th = TileHistory {
             imgs: Default::default(),
         };
-        th.set(date_hours, img).unwrap();
+        th.set(date, img).unwrap();
         th.to_bytes()
     }
 
-    // ─── empty_tile ───
-
-    #[test]
-    fn test_empty_tile_is_transparent() {
-        let t = empty_tile();
-        assert_eq!(t.width, 1000);
-        assert_eq!(t.height, 1000);
-        assert!(t.indices.iter().all(|&v| v == palette::TRANSPARENT));
+    fn create_test_db(path: &str) -> Result<()> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "CREATE TABLE tiles (
+                z INTEGER NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                data BLOB NOT NULL,
+                PRIMARY KEY (z, x, y)
+            );
+            CREATE INDEX tiles_z_y_x_idx ON tiles (z, y, x);",
+        )?;
+        Ok(())
     }
 
-    // ─── stitch_and_downscale ───
-
-    #[test]
-    fn test_stitch_uniform_tile() {
-        let t = make_tile(42u8);
-        let result = stitch_and_downscale([t.clone(), t.clone(), t.clone(), t.clone()]);
-        assert_eq!(result.width, 1000);
-        assert_eq!(result.height, 1000);
-        // All pixels should be 42 (dominant colour).
-        assert!(result.indices.iter().all(|&v| v == 42));
+    fn read_tile(conn: &Connection, z: i32, x: i32, y: i32) -> Option<Vec<u8>> {
+        conn.query_row(
+            "SELECT data FROM tiles WHERE z = ?1 AND x = ?2 AND y = ?3",
+            params![z, x, y],
+            |r| r.get(0),
+        )
+        .ok()
     }
 
-    #[test]
-    fn test_stitch_different_colors_quadrants() {
-        // Each quadrant has a different colour. After 2x2 downscale each output pixel
-        // comes from 4 source pixels (one from each quadrant in the center area).
-        // The weighted mode should pick the colour with the highest weight.
-        // For simple 4-different-colour blocks, each block has 4 unique colours.
-        let t0 = make_tile(1u8);  // BLACK
-        let t1 = make_tile(2u8);  // DARK_GRAY
-        let t2 = make_tile(3u8);  // GRAY
-        let t3 = make_tile(4u8);  // LIGHT_GRAY
-        let result = stitch_and_downscale([t0, t1, t2, t3]);
-        assert_eq!(result.width, 1000);
-        assert_eq!(result.height, 1000);
-        // Each output pixel is from a 2x2 block of the 2000x2000 canvas.
-        // The top-left quadrant of output comes from top-left of canvas (all BLACK=1).
-        // So top-left 500x500 should be BLACK.
-        // Similarly for other quadrants.
-        // Top-left output quadrant: source is 0..1000, 0..1000 of canvas → all tile[0] (BLACK=1)
-        for y in 0..500 {
-            for x in 0..500 {
-                assert_eq!(result.indices[y * 1000 + x], 1, "TL quadrant at ({x},{y})");
-            }
-        }
-        // Top-right output quadrant: source is 1000..2000, 0..1000 → all tile[1] (DARK_GRAY=2)
-        for y in 0..500 {
-            for x in 500..1000 {
-                assert_eq!(result.indices[y * 1000 + x], 2, "TR quadrant at ({x},{y})");
-            }
-        }
-        // Bottom-left: tile[2] (GRAY=3)
-        for y in 500..1000 {
-            for x in 0..500 {
-                assert_eq!(result.indices[y * 1000 + x], 3, "BL quadrant at ({x},{y})");
-            }
-        }
-        // Bottom-right: tile[3] (LIGHT_GRAY=4)
-        for y in 500..1000 {
-            for x in 500..1000 {
-                assert_eq!(result.indices[y * 1000 + x], 4, "BR quadrant at ({x},{y})");
-            }
-        }
-    }
-
-    #[test]
-    fn test_stitch_with_transparent_tile() {
-        // One tile is transparent, others are BLACK. The BLACK pixels should dominate
-        // in blocks where they coexist with transparent.
-        let black = make_tile(palette::BLACK);
-        let trans = empty_tile();
-        let result = stitch_and_downscale([black.clone(), black.clone(), trans, black.clone()]);
-        assert_eq!(result.width, 1000);
-        assert_eq!(result.height, 1000);
-        // Top-left, top-right, bottom-right quadrants should be BLACK.
-        // Bottom-left quadrant: source is all transparent → should be transparent.
-        for y in 500..1000 {
-            for x in 0..500 {
+    /// Assert an entire rectangular region of `img` has `expected`.
+    fn assert_region(img: &PalettedImage, x0: usize, y0: usize, size: usize, expected: u8) {
+        for y in y0..y0 + size {
+            for x in x0..x0 + size {
                 assert_eq!(
-                    result.indices[y * 1000 + x],
-                    palette::TRANSPARENT,
-                    "BL quadrant should be transparent at ({x},{y})"
+                    img.indices[y * TILE_SIZE + x],
+                    expected,
+                    "pixel ({x},{y})",
                 );
             }
         }
     }
 
-    // ─── process_job ───
+    // ─── merge_four ──────────────────────────────────────────────────────────
 
     #[test]
-    fn test_process_job_all_tiles_present() {
-        let img = make_tile(42u8);
-        let blob = make_tilehistory_with_img(img, DateHours(1));
+    fn merge_four_places_quadrants_correctly() {
+        let merged = merge_four([
+            Some(make_tile(1)), // TL
+            Some(make_tile(2)), // TR
+            Some(make_tile(3)), // BL
+            Some(make_tile(4)), // BR
+        ])
+        .unwrap()
+        .unwrap();
 
-        let job = MergeJob {
-            z: 10,
-            x: 0,
-            y: 0,
-            date_hours: DateHours(1),
-            tiles: [Some(blob.clone()), Some(blob.clone()), Some(blob.clone()), Some(blob.clone())],
-            existing: None,
-        };
+        assert_eq!(merged.width as usize, TILE_SIZE);
+        assert!(!merged.indices.windows(2).all(|w| w[0] == w[1]));
 
-        let result = process_job(job);
-        assert_eq!(result.z, 10);
-        assert_eq!(result.x, 0);
-        assert_eq!(result.y, 0);
-        assert!(!result.data.is_empty());
-
-        // Verify the result TileHistory can be read back.
-        let th = TileHistory::from_bytes(&result.data).unwrap();
-        let merged = th.get(DateHours(1)).unwrap();
-        assert_eq!(merged.width, 1000);
-        assert_eq!(merged.height, 1000);
-        assert!(merged.indices.iter().all(|&v| v == 42));
+        let h = HALF_TILE_SIZE;
+        assert_region(&merged, 0, 0, h, 1);
+        assert_region(&merged, h, 0, h, 2);
+        assert_region(&merged, 0, h, h, 3);
+        assert_region(&merged, h, h, h, 4);
     }
 
     #[test]
-    fn test_process_job_some_missing_tiles() {
-        let img = make_tile(42u8);
-        let blob = make_tilehistory_with_img(img, DateHours(1));
+    fn merge_four_missing_quadrant_stays_transparent() {
+        let merged = merge_four([
+            Some(make_tile(9)),
+            None, // missing TR
+            Some(make_tile(9)),
+            Some(make_tile(9)),
+        ])
+        .unwrap()
+        .unwrap();
 
-        // Only top-left tile present; others missing → transparent.
-        let job = MergeJob {
-            z: 10,
-            x: 0,
-            y: 0,
-            date_hours: DateHours(1),
-            tiles: [Some(blob), None, None, None],
-            existing: None,
-        };
-
-        let result = process_job(job);
-        assert!(!result.data.is_empty(), "Should produce data even with missing tiles");
-
-        let th = TileHistory::from_bytes(&result.data).unwrap();
-        let merged = th.get(DateHours(1)).unwrap();
-        // Top-left quadrant should be 42, rest transparent.
-        for y in 0..500 {
-            for x in 0..500 {
-                assert_eq!(merged.indices[y * 1000 + x], 42, "TL at ({x},{y})");
-            }
-        }
-        for y in 500..1000 {
-            for x in 0..1000 {
-                assert_eq!(
-                    merged.indices[y * 1000 + x],
-                    palette::TRANSPARENT,
-                    "BL at ({x},{y})"
-                );
-            }
-        }
-        for y in 0..500 {
-            for x in 500..1000 {
-                assert_eq!(
-                    merged.indices[y * 1000 + x],
-                    palette::TRANSPARENT,
-                    "TR at ({x},{y})"
-                );
-            }
-        }
+        let h = HALF_TILE_SIZE;
+        assert_region(&merged, h, 0, h, palette::TRANSPARENT);
+        assert_region(&merged, 0, 0, h, 9);
     }
 
     #[test]
-    fn test_process_job_all_missing_skips() {
+    fn merge_four_all_missing_returns_none() {
+        assert!(merge_four([None, None, None, None]).unwrap().is_none());
+    }
+
+    // ─── Weights ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn weights_demote_background_but_keep_white_possible() {
+        let w = make_weights();
+        assert_eq!(w[palette::TRANSPARENT as usize], 0);
+        assert!(w[palette::WHITE as usize] > 0, "all-white areas should stay white");
+        assert!(
+            w[palette::WHITE as usize] < w[palette::BLACK as usize],
+            "white should be weaker than a visible colour"
+        );
+    }
+
+    // ─── process_job ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn process_job_all_missing_returns_none() {
         let job = MergeJob {
             z: 10,
             x: 0,
@@ -893,253 +1011,168 @@ mod tests {
             tiles: [None, None, None, None],
             existing: None,
         };
-
-        let result = process_job(job);
-        assert!(result.data.is_empty(), "All missing tiles should produce empty result");
+        assert!(process_job(job).unwrap().is_none());
     }
 
     #[test]
-    fn test_process_job_updates_existing_history() {
-        // Create an existing TileHistory with a version at DateHours(0).
-        let existing_img = make_tile(10u8);
-        let mut existing_th = TileHistory {
-            imgs: Default::default(),
-        };
-        existing_th.set(DateHours(0), existing_img).unwrap();
-        let existing_blob = existing_th.to_bytes();
+    fn process_job_merges_and_preserves_existing_versions() {
+        let src = history_with(make_tile(42), DateHours(1));
+        let existing = history_with(make_tile(10), DateHours(0));
 
-        let new_img = make_tile(42u8);
-        let new_blob = make_tilehistory_with_img(new_img, DateHours(1));
-
-        let job = MergeJob {
+        let result = process_job(MergeJob {
             z: 10,
             x: 0,
             y: 0,
             date_hours: DateHours(1),
-            tiles: [
-                Some(new_blob.clone()),
-                Some(new_blob.clone()),
-                Some(new_blob.clone()),
-                Some(new_blob.clone()),
-            ],
-            existing: Some(existing_blob),
-        };
+            tiles: [Some(src.clone()), Some(src.clone()), Some(src), None],
+            existing: Some(existing),
+        })
+        .unwrap()
+        .unwrap();
 
-        let result = process_job(job);
         let th = TileHistory::from_bytes(&result.data).unwrap();
+        assert_eq!(th.list().len(), 2, "both versions must survive");
 
-        // Should have both versions.
-        assert_eq!(th.list().len(), 2);
+        assert!(th.get(DateHours(0)).unwrap().indices.iter().all(|&v| v == 10));
 
-        // Version at DateHours(0) should still be 10.
-        let v0 = th.get(DateHours(0)).unwrap();
-        assert!(v0.indices.iter().all(|&v| v == 10));
-
-        // Version at DateHours(1) should be 42.
-        let v1 = th.get(DateHours(1)).unwrap();
-        assert!(v1.indices.iter().all(|&v| v == 42));
-    }
-
-    // ─── make_weights ───
-
-    #[test]
-    fn test_weights_background_lower() {
-        let w = make_weights();
-        assert!(w[palette::TRANSPARENT as usize] < w[1 as usize], "TRANSPARENT should have lower weight");
-        assert!(w[palette::WHITE as usize] < w[1 as usize], "WHITE should have lower weight");
-    }
-
-    // ─── End-to-end with SQLite ───
-
-    fn create_test_db(
-        path: &str,
-    ) -> anyhow::Result<()> {
-        let conn = Connection::open(path)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tiles (
-                z INTEGER NOT NULL,
-                x INTEGER NOT NULL,
-                y INTEGER NOT NULL,
-                data BLOB NOT NULL,
-                PRIMARY KEY (z, x, y)
-            );
-            CREATE TABLE IF NOT EXISTS versions (
-                date INTEGER PRIMARY KEY,
-                original_file TEXT
-            );",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_merge_single_level() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let path = tmp.path().to_str().unwrap();
-        create_test_db(path).unwrap();
-
-        // Insert 4 tiles at z=11 (x=0..1, y=0..1) with a solid colour.
-        let img = make_tile(42u8);
-        let blob = make_tilehistory_with_img(img, DateHours(1));
-
-        let conn = Connection::open(path).unwrap();
-        for x in 0..=1 {
-            for y in 0..=1 {
-                conn.execute(
-                    "INSERT INTO tiles (z, x, y, data) VALUES (11, ?1, ?2, ?3)",
-                    params![x, y, blob.clone()],
-                )
-                .unwrap();
-            }
-        }
-        drop(conn);
-
-        // Run merge for level z=10 only (we'll test the full pipeline in another test).
-        merge_level(path, 10, DateHours(1)).unwrap();
-
-        // Verify: tile (10, 0, 0) should exist.
-        let conn = Connection::open(path).unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT data FROM tiles WHERE z = 10 AND x = 0 AND y = 0"
-        ).unwrap();
-        let data: Vec<u8> = stmt.query_row(params![], |r| r.get(0)).unwrap();
-        assert!(!data.is_empty());
-
-        let th = TileHistory::from_bytes(&data).unwrap();
         let merged = th.get(DateHours(1)).unwrap();
-        assert_eq!(merged.width, 1000);
-        assert_eq!(merged.height, 1000);
-        assert!(merged.indices.iter().all(|&v| v == 42));
+        assert_region(&merged, 0, 0, HALF_TILE_SIZE, 42);
+        assert_region(
+            &merged,
+            HALF_TILE_SIZE,
+            HALF_TILE_SIZE,
+            HALF_TILE_SIZE,
+            palette::TRANSPARENT,
+        );
     }
 
+    // ─── Double-merge layout regression ───────────────────────────────────────
+    //
+    // The reader now emits tiles in true 4×4 row-major order. Before the fix,
+    // process_job_double assumed a quadrant-grouped layout, which scrambled
+    // the output image. This test pins the correct behaviour.
+
     #[test]
-    fn test_merge_with_missing_parent_tiles() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let path = tmp.path().to_str().unwrap();
-        create_test_db(path).unwrap();
+    fn double_merge_preserves_4x4_row_major_layout() {
+        let date = DateHours(1);
+        let tiles = std::array::from_fn(|i| {
+            Some(history_with(make_tile((i + 1) as u8), date))
+        });
 
-        // Insert only 2 tiles at z=11: (0,0) and (1,0). Missing (0,1) and (1,1).
-        let img = make_tile(42u8);
-        let blob = make_tilehistory_with_img(img, DateHours(1));
-
-        let conn = Connection::open(path).unwrap();
-        conn.execute(
-            "INSERT INTO tiles (z, x, y, data) VALUES (11, 0, 0, ?1)",
-            params![blob.clone()],
-        )
+        let result = process_job_double(MergeJobDouble {
+            z: 9,
+            x: 0,
+            y: 0,
+            date_hours: date,
+            tiles,
+            existing: None,
+        })
+        .unwrap()
         .unwrap();
-        conn.execute(
-            "INSERT INTO tiles (z, x, y, data) VALUES (11, 1, 0, ?1)",
-            params![blob],
-        )
-        .unwrap();
-        drop(conn);
 
-        merge_level(path, 10, DateHours(1)).unwrap();
+        let th = TileHistory::from_bytes(&result.data).unwrap();
+        let img = th.get(date).unwrap();
 
-        // Verify: (10, 0, 0) exists with top half = 42, bottom half = transparent.
-        let conn = Connection::open(path).unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT data FROM tiles WHERE z = 10 AND x = 0 AND y = 0"
-        ).unwrap();
-        let data: Vec<u8> = stmt.query_row(params![], |r| r.get(0)).unwrap();
-        let th = TileHistory::from_bytes(&data).unwrap();
-        let merged = th.get(DateHours(1)).unwrap();
-
-        // Top half (y=0..500) should be 42.
-        for y in 0..500 {
-            for x in 0..1000 {
-                assert_eq!(merged.indices[y * 1000 + x], 42, "Top at ({x},{y})");
-            }
-        }
-        // Bottom half (y=500..1000) should be transparent.
-        for y in 500..1000 {
-            for x in 0..1000 {
+        // After two downscales, each 1000² source tile → 250×250 block.
+        for row in 0..4usize {
+            for col in 0..4usize {
+                let x = col * 250 + 125;
+                let y = row * 250 + 125;
                 assert_eq!(
-                    merged.indices[y * 1000 + x],
-                    palette::TRANSPARENT,
-                    "Bottom at ({x},{y})"
+                    img.indices[y * TILE_SIZE + x],
+                    (row * 4 + col + 1) as u8,
+                    "block (row={row}, col={col})"
                 );
             }
         }
     }
 
     #[test]
-    fn test_merge_multi_level() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+    fn double_merge_single_source_tile_lands_top_left() {
+        let date = DateHours(1);
+        let mut tiles: [Option<Vec<u8>>; 16] = std::array::from_fn(|_| None);
+        tiles[0] = Some(history_with(make_tile(5), date));
+
+        let result = process_job_double(MergeJobDouble {
+            z: 9,
+            x: 0,
+            y: 0,
+            date_hours: date,
+            tiles,
+            existing: None,
+        })
+        .unwrap()
+        .unwrap();
+
+        let img = TileHistory::from_bytes(&result.data)
+            .unwrap()
+            .get(date)
+            .unwrap();
+
+        assert_region(&img, 0, 0, 250, 5);
+        assert_region(&img, 250, 0, 250, palette::TRANSPARENT);
+        assert_region(&img, 0, 250, 250, palette::TRANSPARENT);
+    }
+
+    // ─── End-to-end through SQLite ───────────────────────────────────────────
+
+    #[test]
+    fn merge_level_round_trips_and_upserts() -> Result<()> {
+        let tmp = tempfile::NamedTempFile::new()?;
         let path = tmp.path().to_str().unwrap();
-        create_test_db(path).unwrap();
+        create_test_db(path)?;
 
-        // Insert 16 tiles at z=11 covering (0..=3, 0..=3).
-        // merge() does a double-merge for z=9 (from z=11), then normal merges z=8..0.
-        let img = make_tile(42u8);
-        let blob = make_tilehistory_with_img(img, DateHours(1));
+        // Source tiles carry two versions: colour 7 at date 1, colour 8 at date 2.
+        let mut th = TileHistory {
+            imgs: Default::default(),
+        };
+        th.set(DateHours(1), make_tile(7))?;
+        th.set(DateHours(2), make_tile(8))?;
+        let blob = th.to_bytes();
 
-        let conn = Connection::open(path).unwrap();
-        for x in 0..=3 {
-            for y in 0..=3 {
+        let conn = Connection::open(path)?;
+        for x in 0..=1 {
+            for y in 0..=1 {
                 conn.execute(
                     "INSERT INTO tiles (z, x, y, data) VALUES (11, ?1, ?2, ?3)",
-                    params![x, y, blob.clone()],
-                )
-                .unwrap();
+                    params![x, y, blob],
+                )?;
             }
         }
         drop(conn);
 
-        // Run full merge (z=9 double from z=11, then z=8..0).
-        merge(path, DateHours(1)).unwrap();
+        // First pass: creates the z=10 tile.
+        merge_level(path, 10, DateHours(1))?;
+        // Second pass: must UPDATE the row, not duplicate or clobber history.
+        merge_level(path, 10, DateHours(2))?;
 
-        // Verify all levels have tile (0, 0). z=10 is skipped, so z=0..9 (10 levels).
-        let conn = Connection::open(path).unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT COUNT(*) FROM tiles WHERE z <= 9 AND x = 0 AND y = 0"
-        ).unwrap();
-        let count: i64 = stmt.query_row(params![], |r| r.get(0)).unwrap();
-        assert_eq!(count, 10, "Expected 10 levels (z=0..9), got {count}");
+        let conn = Connection::open(path)?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tiles WHERE z = 10", [], |r| r.get(0))?;
+        assert_eq!(count, 1, "upsert must not create duplicate rows");
 
-        // Verify z=10 was NOT created.
-        let count_z10: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM tiles WHERE z = 10",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(count_z10, 0, "z=10 should not exist (skipped)");
+        let data = read_tile(&conn, 10, 0, 0).expect("z=10 tile must exist");
+        let th = TileHistory::from_bytes(&data).unwrap();
+        assert_eq!(th.list().len(), 2);
+        assert!(th.get(DateHours(1)).unwrap().indices.iter().all(|&v| v == 7));
+        assert!(th.get(DateHours(2)).unwrap().indices.iter().all(|&v| v == 8));
 
-        // Verify each level produces a valid 1000x1000 image.
-        let mut stmt = conn.prepare(
-            "SELECT z, data FROM tiles WHERE x = 0 AND y = 0 AND z <= 9"
-        ).unwrap();
-        let rows: Vec<(i32, Vec<u8>)> = stmt
-            .query_map(params![], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-
-        for (z, data) in rows {
-            let th = TileHistory::from_bytes(&data).unwrap();
-            let merged = th.get(DateHours(1)).unwrap();
-            assert_eq!(merged.width, 1000, "z={z}: width should be 1000");
-            assert_eq!(merged.height, 1000, "z={z}: height should be 1000");
-            assert_eq!(merged.indices[0], 42, "z={z}: top-left pixel should be 42");
-        }
+        Ok(())
     }
 
     #[test]
-    fn test_merge_no_tiles_at_source_level() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+    fn merge_level_empty_source_is_noop() -> Result<()> {
+        let tmp = tempfile::NamedTempFile::new()?;
         let path = tmp.path().to_str().unwrap();
-        create_test_db(path).unwrap();
+        create_test_db(path)?;
 
-        // No tiles at z=11 → merge should complete without error.
-        merge(path, DateHours(1)).unwrap();
+        merge_level(path, 10, DateHours(1))?;
+        merge_level_double(path, 9, DateHours(1))?;
 
-        // No tiles should have been created.
-        let conn = Connection::open(path).unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM tiles",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let conn = Connection::open(path)?;
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM tiles", [], |r| r.get(0))?;
         assert_eq!(count, 0);
+        Ok(())
     }
 }

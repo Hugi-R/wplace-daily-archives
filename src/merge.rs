@@ -22,6 +22,22 @@ struct MergeJob {
     existing: Option<Vec<u8>>,
 }
 
+/// Job for a "double merge" that skips an intermediate z-level.
+/// Reads 16 tiles from z-2 (a 4×4 grid), does two rounds of stitch+downscale,
+/// and writes directly to z (saving one intermediate z-level from storage).
+struct MergeJobDouble {
+    z: i32,
+    x: i32,
+    y: i32,
+    date_hours: DateHours,
+    /// 16 source TileHistory blobs from z-2, row-major (y then x):
+    /// [TL00, TL01, TL10, TL11,  TR00, TR01, TR10, TR11,  BL00, BL01, BL10, BL11,  BR00, BR01, BR10, BR11]
+    /// Each group of 4 corresponds to a quadrant at the intermediate level.
+    tiles: [Option<Vec<u8>>; 16],
+    /// Existing TileHistory blob at (z, x, y) if any
+    existing: Option<Vec<u8>>,
+}
+
 struct MergeResult {
     z: i32,
     x: i32,
@@ -130,6 +146,93 @@ fn process_job(job: MergeJob) -> MergeResult {
     let merged = stitch_and_downscale(tiles);
 
     // Build or update TileHistory
+    let mut th = match &job.existing {
+        Some(data) => TileHistory::from_bytes(data).expect("valid TileHistory"),
+        None => TileHistory {
+            imgs: Default::default(),
+        },
+    };
+
+    th.set(date_hours, merged)
+        .expect("TileHistory::set should succeed");
+
+    MergeResult {
+        z: job.z,
+        x: job.x,
+        y: job.y,
+        data: th.to_bytes(),
+    }
+}
+
+/// Decode a source tile blob at the target date_hours; missing → empty TRANSPARENT tile.
+fn decode_tile_for_date(blob: Option<Vec<u8>>, date_hours: DateHours) -> PalettedImage {
+    match blob {
+        Some(data) => {
+            let th = TileHistory::from_bytes(&data).expect("valid TileHistory");
+            match th.get(date_hours) {
+                Ok(img) => img,
+                Err(_) => empty_tile(),
+            }
+        }
+        None => empty_tile(),
+    }
+}
+
+/// Process a double-merge job: 16 tiles from z-2 → two rounds of stitch+downscale → z.
+fn process_job_double(job: MergeJobDouble) -> MergeResult {
+    let date_hours = job.date_hours;
+
+    // Decode all 16 source tiles.
+    let tiles: Vec<PalettedImage> = job.tiles.iter()
+        .map(|t| decode_tile_for_date(t.clone(), date_hours))
+        .collect();
+
+    // Check if all tiles are empty.
+    let all_empty = tiles.iter().all(|t| {
+        t.indices.iter().all(|&v| v == palette::TRANSPARENT)
+    });
+    if all_empty {
+        return MergeResult {
+            z: job.z,
+            x: job.x,
+            y: job.y,
+            data: vec![],
+        };
+    }
+
+    // Round 1: 16 tiles (4×4 at z-2) → 4 intermediate tiles (2×2 at z-1).
+    // Layout of 16 tiles (row-major):
+    //   [0,  1,  4,  5]     [ 8,  9, 12, 13]
+    //   [2,  3,  6,  7]     [10, 11, 14, 15]
+    //
+    // Quadrants at intermediate level:
+    //   TL: tiles[0..4]  (z-1 children for TL quadrant)
+    //   TR: tiles[4..8]
+    //   BL: tiles[8..12]
+    //   BR: tiles[12..16]
+    let intermediates: [PalettedImage; 4] = [
+        stitch_and_downscale([
+            tiles[0].clone(), tiles[1].clone(),
+            tiles[2].clone(), tiles[3].clone(),
+        ]),
+        stitch_and_downscale([
+            tiles[4].clone(), tiles[5].clone(),
+            tiles[6].clone(), tiles[7].clone(),
+        ]),
+        stitch_and_downscale([
+            tiles[8].clone(), tiles[9].clone(),
+            tiles[10].clone(), tiles[11].clone(),
+        ]),
+        stitch_and_downscale([
+            tiles[12].clone(), tiles[13].clone(),
+            tiles[14].clone(), tiles[15].clone(),
+        ]),
+    ];
+
+    // Round 2: 4 intermediate tiles → final tile at z.
+    let merged = stitch_and_downscale(intermediates);
+
+    // Build or update TileHistory.
     let mut th = match &job.existing {
         Some(data) => TileHistory::from_bytes(data).expect("valid TileHistory"),
         None => TileHistory {
@@ -359,11 +462,234 @@ fn merge_level(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<(
     Ok(())
 }
 
+/// Like [`merge_level`], but skips an intermediate z-level.
+///
+/// Reads 16 source tiles from z-2 (a 4×4 grid), does two rounds of
+/// stitch+downscale, and writes directly to z. This saves storage by
+/// never persisting the skipped level.
+fn merge_level_double(db_path: &str, z: i32, date_hours: DateHours) -> anyhow::Result<()> {
+    let source_z = z + 2;
+
+    let conn = Connection::open(db_path).context("open db")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tiles WHERE z = ?1",
+        params![source_z],
+        |r| r.get(0),
+    )?;
+    if count == 0 {
+        return Ok(());
+    }
+
+    let (min_x, max_x, min_y, max_y) = conn.query_row(
+        "SELECT MIN(x), MAX(x), MIN(y), MAX(y) FROM tiles WHERE z = ?1",
+        params![source_z],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
+    )?;
+
+    // Grandparent tile range (divide by 4).
+    let gp_min_x = (min_x / 4) as i32;
+    let gp_max_x = (max_x / 4) as i32;
+    let gp_min_y = (min_y / 4) as i32;
+    let gp_max_y = (max_y / 4) as i32;
+
+    drop(conn);
+
+    let (job_tx, job_rx) = bounded::<MergeJobDouble>(2000);
+    let (res_tx, res_rx) = bounded::<MergeResult>(2000);
+
+    let db_path = db_path.to_string();
+
+    // ── Reader thread ──
+    const STRIP_SIZE: i32 = 50;
+
+    let reader_path = db_path.clone();
+    let reader = thread::spawn(move || {
+        let conn = Connection::open(&reader_path).expect("reader open db");
+        conn.pragma_update(None, "journal_mode", "WAL").expect("WAL mode");
+
+        let mut fetch_source = conn.prepare_cached(
+            "SELECT x, y, data FROM tiles WHERE z = ?1 AND y = ?2 AND x >= ?3 AND x <= ?4",
+        ).expect("prepare fetch_source");
+
+        let mut fetch_existing = conn.prepare_cached(
+            "SELECT x, y, data FROM tiles WHERE z = ?1 AND y = ?2 AND x >= ?3 AND x <= ?4",
+        ).expect("prepare fetch_existing");
+
+        for gpy in gp_min_y..=gp_max_y {
+            let sy0 = 4 * gpy;
+            let sy1 = sy0 + 1;
+            let sy2 = sy0 + 2;
+            let sy3 = sy0 + 3;
+
+            for strip_start in (gp_min_x..=gp_max_x).step_by(STRIP_SIZE as usize) {
+                let strip_end = std::cmp::min(strip_start + STRIP_SIZE - 1, gp_max_x);
+
+                // Source x range: 4*strip_start .. 4*strip_end+3.
+                let sx_min = 4 * strip_start;
+                let sx_max = 4 * strip_end + 3;
+
+                // Query source tiles for this strip (four y-rows).
+                let mut source_map: std::collections::HashMap<(i32, i32), Vec<u8>> =
+                    std::collections::HashMap::new();
+
+                for &sy in &[sy0, sy1, sy2, sy3] {
+                    let rows = fetch_source.query_map(
+                        params![source_z, sy, sx_min, sx_max],
+                        |r| Ok((r.get::<_, i32>(0).unwrap(), r.get::<_, i32>(1).unwrap(), r.get::<_, Vec<u8>>(2).unwrap())),
+                    ).expect("query source tiles");
+
+                    for row in rows {
+                        let (x, y, data) = row.expect("row");
+                        source_map.insert((x, y), data);
+                    }
+                }
+
+                // Query existing tiles for this strip.
+                let mut existing_map: std::collections::HashMap<(i32, i32), Vec<u8>> =
+                    std::collections::HashMap::new();
+
+                let rows = fetch_existing.query_map(
+                    params![z, gpy, strip_start, strip_end],
+                    |r| Ok((r.get::<_, i32>(0).unwrap(), r.get::<_, i32>(1).unwrap(), r.get::<_, Vec<u8>>(2).unwrap())),
+                ).expect("query existing tiles");
+
+                for row in rows {
+                    let (x, y, data) = row.expect("row");
+                    existing_map.insert((x, y), data);
+                }
+
+                // Assemble and send jobs.
+                for gpx in strip_start..=strip_end {
+                    let sx0 = 4 * gpx;
+
+                    // 16 tiles in row-major order:
+                    // Row 0: (sx0, sy0), (sx0+1, sy0), (sx0+2, sy0), (sx0+3, sy0)
+                    // Row 1: (sx0, sy1), (sx0+1, sy1), (sx0+2, sy1), (sx0+3, sy1)
+                    // Row 2: (sx0, sy2), (sx0+1, sy2), (sx0+2, sy2), (sx0+3, sy2)
+                    // Row 3: (sx0, sy3), (sx0+1, sy3), (sx0+2, sy3), (sx0+3, sy3)
+                    let mut tiles: [Option<Vec<u8>>; 16] = Default::default();
+                    let mut any = false;
+                    for dy in 0..4i32 {
+                        for dx in 0..4i32 {
+                            let idx = (dy * 4 + dx) as usize;
+                            tiles[idx] = source_map.get(&(sx0 + dx, sy0 + dy)).cloned();
+                            if tiles[idx].is_some() {
+                                any = true;
+                            }
+                        }
+                    }
+
+                    if !any {
+                        continue;
+                    }
+
+                    let existing = existing_map.get(&(gpx, gpy)).cloned();
+
+                    job_tx.send(MergeJobDouble {
+                        z,
+                        x: gpx,
+                        y: gpy,
+                        date_hours,
+                        tiles,
+                        existing,
+                    }).expect("send job");
+                }
+            }
+        }
+    });
+
+    // ── Worker threads ──
+    let n_workers = num_cpus::get();
+    let mut workers = Vec::new();
+    for _ in 0..n_workers {
+        let job_rx = job_rx.clone();
+        let res_tx = res_tx.clone();
+        workers.push(thread::spawn(move || {
+            for job in job_rx {
+                let result = process_job_double(job);
+                if !result.data.is_empty() {
+                    res_tx.send(result).unwrap();
+                }
+            }
+        }));
+    }
+    drop(res_tx);
+
+    // ── Writer thread ──
+    let writer = thread::spawn(move || {
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.pragma_update(None, "synchronous", "NORMAL").unwrap();
+
+        let mut batch = Vec::with_capacity(2000);
+        let flush = |conn: &mut Connection, batch: &mut Vec<MergeResult>| {
+            let tx = conn.transaction().unwrap();
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO tiles (z, x, y, data) VALUES (?1, ?2, ?3, ?4)",
+                ).unwrap();
+                for r in batch.drain(..) {
+                    stmt.execute(params![r.z, r.x, r.y, r.data]).unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        };
+
+        let start = Instant::now();
+        let mut processed: usize = 0;
+        let mut last_print = start;
+
+        for r in res_rx {
+            batch.push(r);
+            processed += 1;
+            if batch.len() >= 2000 {
+                flush(&mut conn, &mut batch);
+                if last_print.elapsed() >= std::time::Duration::from_secs(10) {
+                    let elapsed = start.elapsed();
+                    let rate = processed as f64 / elapsed.as_secs_f64();
+                    eprintln!(
+                        "  {} jobs processed in {:.1}s ({:.0} jobs/s)",
+                        processed, elapsed.as_secs_f64(), rate
+                    );
+                    last_print = Instant::now();
+                }
+            }
+        }
+        if !batch.is_empty() {
+            flush(&mut conn, &mut batch);
+        }
+
+        let elapsed = start.elapsed();
+        let rate = processed as f64 / elapsed.as_secs_f64();
+        eprintln!(
+            "  {} jobs processed in {:.1}s ({:.0} jobs/s)",
+            processed, elapsed.as_secs_f64(), rate
+        );
+    });
+
+    reader.join().unwrap();
+    for w in workers {
+        w.join().unwrap();
+    }
+    writer.join().unwrap();
+
+    Ok(())
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /// Merge tiles from z=11 down to z=0 for the given DateHours.
+///
+/// z=10 is skipped (not stored) — z=9 is produced via a double-merge
+/// directly from z=11 to save storage.
 pub fn merge(db_path: &str, date_hours: DateHours) -> anyhow::Result<()> {
-    for z in (0..=10).rev() {
+    // z=9: double-merge from z=11 (skips storing z=10).
+    eprintln!("Merging level z=9 (double from z=11) ...");
+    merge_level_double(db_path, 9, date_hours)?;
+
+    // z=8 .. z=0: normal merge from z+1.
+    for z in (0..=8).rev() {
         eprintln!("Merging level z={z} ...");
         merge_level(db_path, z, date_hours)?;
     }
@@ -743,13 +1069,14 @@ mod tests {
         let path = tmp.path().to_str().unwrap();
         create_test_db(path).unwrap();
 
-        // Insert 4 tiles at z=11 covering (0..=1, 0..=1).
+        // Insert 16 tiles at z=11 covering (0..=3, 0..=3).
+        // merge() does a double-merge for z=9 (from z=11), then normal merges z=8..0.
         let img = make_tile(42u8);
         let blob = make_tilehistory_with_img(img, DateHours(1));
 
         let conn = Connection::open(path).unwrap();
-        for x in 0..=1 {
-            for y in 0..=1 {
+        for x in 0..=3 {
+            for y in 0..=3 {
                 conn.execute(
                     "INSERT INTO tiles (z, x, y, data) VALUES (11, ?1, ?2, ?3)",
                     params![x, y, blob.clone()],
@@ -759,21 +1086,28 @@ mod tests {
         }
         drop(conn);
 
-        // Run full merge (z=10 down to z=0).
+        // Run full merge (z=9 double from z=11, then z=8..0).
         merge(path, DateHours(1)).unwrap();
 
-        // Verify all levels have tile (0, 0).
+        // Verify all levels have tile (0, 0). z=10 is skipped, so z=0..9 (10 levels).
         let conn = Connection::open(path).unwrap();
         let mut stmt = conn.prepare(
-            "SELECT COUNT(*) FROM tiles WHERE z <= 10 AND x = 0 AND y = 0"
+            "SELECT COUNT(*) FROM tiles WHERE z <= 9 AND x = 0 AND y = 0"
         ).unwrap();
         let count: i64 = stmt.query_row(params![], |r| r.get(0)).unwrap();
-        assert_eq!(count, 11, "Expected 11 levels (z=0..10), got {count}");
+        assert_eq!(count, 10, "Expected 10 levels (z=0..9), got {count}");
+
+        // Verify z=10 was NOT created.
+        let count_z10: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM tiles WHERE z = 10",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count_z10, 0, "z=10 should not exist (skipped)");
 
         // Verify each level produces a valid 1000x1000 image.
-        // The top-left corner must be 42 because the source tiles exist.
         let mut stmt = conn.prepare(
-            "SELECT z, data FROM tiles WHERE x = 0 AND y = 0 AND z <= 10"
+            "SELECT z, data FROM tiles WHERE x = 0 AND y = 0 AND z <= 9"
         ).unwrap();
         let rows: Vec<(i32, Vec<u8>)> = stmt
             .query_map(params![], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
@@ -786,7 +1120,6 @@ mod tests {
             let merged = th.get(DateHours(1)).unwrap();
             assert_eq!(merged.width, 1000, "z={z}: width should be 1000");
             assert_eq!(merged.height, 1000, "z={z}: height should be 1000");
-            // Top-left pixel must be 42 (source data is present).
             assert_eq!(merged.indices[0], 42, "z={z}: top-left pixel should be 42");
         }
     }

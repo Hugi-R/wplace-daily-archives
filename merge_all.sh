@@ -1,8 +1,12 @@
+#!/bin/bash
+set -e
+
 for file in /run/media/system/DataBtrfs/wplace/wplace-archives/days2/*.db
 do
     # Cleanup and index
     sqlite3 $file "DELETE FROM tiles WHERE z != 11;"
     sqlite3 $file "CREATE INDEX IF NOT EXISTS tiles_z_y_x_idx ON tiles (z, y, x);"
+    ./target/release/wplace-daily-archives validate $file
 
     echo "Processing version: 0 from file: $file"
     ./target/release/wplace-daily-archives merge -t 0 $file

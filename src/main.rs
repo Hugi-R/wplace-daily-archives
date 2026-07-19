@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use wimage::tilehistory::DateHours;
 
 mod merge;
+mod validate;
 
 #[derive(Parser)]
 #[command(name = "wplace-daily-archives")]
@@ -23,6 +24,11 @@ enum Command {
         /// Path to the SQLite database
         input_db: String,
     },
+    /// Validate (and fix) every tile's TileHistory in the database.
+    Validate {
+        /// Path to the SQLite database
+        input_db: String,
+    },
 }
 
 fn main() {
@@ -33,6 +39,10 @@ fn main() {
             let date_hours = DateHours(t);
             eprintln!("Merging for datehour={t} ({}) from {}", date_hours.to_datetime(), input_db);
             merge::merge(&input_db, date_hours).with_context(|| "merge failed")
+        }
+        Command::Validate { input_db } => {
+            eprintln!("Validating tiles in {}", input_db);
+            validate::validate(&input_db).with_context(|| "validate failed")
         }
     };
 

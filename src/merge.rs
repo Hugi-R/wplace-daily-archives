@@ -191,13 +191,14 @@ fn decode_tile_for_date(
     validate_tile(&image)?;
 
     // Avoid downscaling an image that is entirely transparent.
-    if image
-        .indices
-        .iter()
-        .all(|&value| value == palette::TRANSPARENT)
-    {
-        return Ok(None);
-    }
+    // Commented for now, this should never happen, as all tiles should have at least one non-transparent pixel.
+    // if image
+    //     .indices
+    //     .iter()
+    //     .all(|&value| value == palette::TRANSPARENT)
+    // {
+    //     return Ok(None);
+    // }
 
     Ok(Some(image))
 }
@@ -608,7 +609,7 @@ fn read_jobs<J: TileMergeJob>(
 
 fn merge_worker_count() -> usize {
     let automatic = thread::available_parallelism()
-        .map(|count| count.get() - 2) // keep some headroom for reader/writer threads
+        .map(|count| count.get().saturating_sub(2)) // keep some headroom for reader/writer threads
         .unwrap_or(1)
         .min(DEFAULT_MAX_WORKERS)
         .max(1);

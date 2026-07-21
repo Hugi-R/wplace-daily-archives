@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, SendTimeoutError, Sender};
 use rusqlite::{params, Connection};
 
-use wimage::tilehistory::TileHistory;
+use wimage::tilehistory::{DateHours, TileHistory};
 
 const WRITE_BATCH_SIZE: usize = 256;
 const DEFAULT_MAX_WORKERS: usize = 16;
@@ -21,6 +21,7 @@ struct ValidateJob {
     x: i32,
     y: i32,
     data: Vec<u8>,
+    versions: Vec<DateHours>,
 }
 
 struct ValidateResult {
@@ -87,6 +88,22 @@ fn read_jobs(
 ) -> Result<()> {
     let conn = open_db(db_path)?;
 
+    // Read versions
+    let mut fetch = conn.prepare(
+        "SELECT date FROM versions ORDER BY date ASC",
+    )?;
+    let mut versions = Vec::new();
+    let mut rows = fetch.query([])?;
+    while let Some(row) = rows.next()? {
+        let date: i32 = row.get(0)?;
+        versions.push(DateHours(date as u32));
+    }
+    // If there's more than 7 dates, crash, because we want a DB to be a week of history
+    if versions.len() > 7 {
+        bail!("database has more than 7 versions, which is not supported");
+    }
+
+    // Read tiles
     let mut fetch = conn.prepare(
         "SELECT z, x, y, data FROM tiles",
     )?;
@@ -107,7 +124,7 @@ fn read_jobs(
         if !send_with_cancel(
             &job_tx,
             cancel,
-            ValidateJob { z, x, y, data },
+            ValidateJob { z, x, y, data, versions: versions.clone() },
         )? {
             return Ok(());
         }
@@ -131,12 +148,12 @@ fn read_jobs(
 // ─── Worker ──────────────────────────────────────────────────────────────────
 
 fn process_job(job: ValidateJob) -> Result<Option<ValidateResult>> {
-    let ValidateJob { z, x, y, data } = job;
+    let ValidateJob { z, x, y, data, versions } = job;
 
     let mut history = TileHistory::from_bytes(&data)
         .with_context(|| format!("decode tile z={}, x={}, y={}", z, x, y))?;
 
-    let was_valid = history.validate_and_fix()
+    let was_valid = history.validate_and_fix(Some(versions))
         .with_context(|| format!("validate tile z={}, x={}, y={}", z, x, y))?;
 
     if was_valid {

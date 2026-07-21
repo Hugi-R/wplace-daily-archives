@@ -609,7 +609,7 @@ fn read_jobs<J: TileMergeJob>(
 
 fn merge_worker_count() -> usize {
     let automatic = thread::available_parallelism()
-        .map(|count| count.get().saturating_sub(2)) // keep some headroom for reader/writer threads
+        .map(|count| count.get().saturating_sub(1)) // keep some headroom for reader/writer threads
         .unwrap_or(1)
         .min(DEFAULT_MAX_WORKERS)
         .max(1);

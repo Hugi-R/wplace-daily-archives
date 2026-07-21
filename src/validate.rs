@@ -270,7 +270,7 @@ fn join_thread(
 
 fn validate_worker_count() -> usize {
     let automatic = thread::available_parallelism()
-        .map(|count| count.get().saturating_sub(2))
+        .map(|count| count.get().saturating_sub(1))
         .unwrap_or(1)
         .min(DEFAULT_MAX_WORKERS)
         .max(1);

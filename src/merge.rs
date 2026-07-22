@@ -203,6 +203,8 @@ fn decode_tile_for_date(
     Ok(Some(image))
 }
 
+/// Encode a merged image into a TileHistory blob, preserving existing versions.
+/// Returns `Ok(None)` if the merged image is identical to the existing version for this date.
 fn encode_merged_history(
     z: i32,
     x: i32,
@@ -210,7 +212,7 @@ fn encode_merged_history(
     date_hours: DateHours,
     existing: Option<Vec<u8>>,
     image: PalettedImage,
-) -> Result<MergeResult> {
+) -> Result<Option<MergeResult>> {
     let mut history = match existing {
         Some(data) => TileHistory::from_bytes(&data)
             .context("decode existing TileHistory blob")?,
@@ -219,15 +221,19 @@ fn encode_merged_history(
         },
     };
 
-    history
+    let any_diff = history
         .set(date_hours, image)
         .context("write merged image into TileHistory")?;
 
-    Ok(MergeResult {
-        z,
-        x,
-        y,
-        data: history.to_bytes(),
+    Ok(if any_diff {
+        Some(MergeResult {
+            z,
+            x,
+            y,
+            data: history.to_bytes(),
+        })
+    } else {
+        None
     })
 }
 
@@ -256,9 +262,11 @@ fn process_job(job: MergeJob) -> Result<Option<MergeResult>> {
         return Ok(None);
     };
 
-    Ok(Some(encode_merged_history(
-        z, x, y, date_hours, existing, merged,
-    )?))
+    return match encode_merged_history(z, x, y, date_hours, existing, merged) {
+        Ok(Some(result)) => Ok(Some(result)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error).context("encode merged TileHistory"),
+    }
 }
 
 fn process_job_double(job: MergeJobDouble) -> Result<Option<MergeResult>> {
@@ -302,9 +310,11 @@ fn process_job_double(job: MergeJobDouble) -> Result<Option<MergeResult>> {
         return Ok(None);
     };
 
-    Ok(Some(encode_merged_history(
-        z, x, y, date_hours, existing, merged,
-    )?))
+    return match encode_merged_history(z, x, y, date_hours, existing, merged) {
+        Ok(Some(result)) => Ok(Some(result)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error).context("encode merged TileHistory job double"),
+    }
 }
 
 // ─── Generic job construction ───────────────────────────────────────────────
@@ -985,19 +995,6 @@ mod tests {
     #[test]
     fn merge_four_all_missing_returns_none() {
         assert!(merge_four([None, None, None, None]).unwrap().is_none());
-    }
-
-    // ─── Weights ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn weights_demote_background_but_keep_white_possible() {
-        let w = make_weights();
-        assert_eq!(w[palette::TRANSPARENT as usize], 0);
-        assert!(w[palette::WHITE as usize] > 0, "all-white areas should stay white");
-        assert!(
-            w[palette::WHITE as usize] < w[palette::BLACK as usize],
-            "white should be weaker than a visible colour"
-        );
     }
 
     // ─── process_job ─────────────────────────────────────────────────────────

@@ -153,7 +153,7 @@ fn process_job(job: ValidateJob) -> Result<Option<ValidateResult>> {
     let mut history = TileHistory::from_bytes(&data)
         .with_context(|| format!("decode tile z={}, x={}, y={}", z, x, y))?;
 
-    let was_valid = history.validate_and_fix(Some(versions))
+    let was_valid = history.validate_and_fix(Some(versions), true)
         .with_context(|| format!("validate tile z={}, x={}, y={}", z, x, y))?;
 
     if was_valid {

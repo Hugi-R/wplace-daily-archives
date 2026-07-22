@@ -229,6 +229,21 @@ fn writer_loop(
 
         match result_rx.recv_timeout(Duration::from_secs(1)) {
             Ok(result) => {
+                if result.data.is_empty() {
+                    // Delete the tile if the history is empty after validation.
+                    // No batching, this is very rare.
+                    conn.execute(
+                        "DELETE FROM tiles WHERE z = ?1 AND x = ?2 AND y = ?3",
+                        params![result.z, result.x, result.y],
+                    )
+                    .with_context(|| {
+                        format!(
+                            "delete tile z={}, x={}, y={}",
+                            result.z, result.x, result.y
+                        )
+                    })?;
+                }
+
                 batch.push(result);
                 written += 1;
 

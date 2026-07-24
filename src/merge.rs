@@ -1,3 +1,61 @@
+/// Implements the `merge -t DATEHOUR INPUTDB` command.
+/// The merge operation take images on a x,y,z grid from INPUTDB and merge them into a single image.
+/// The images are stored in TileHistory format, which is a time series of images for a given tile. DATEHOUR is the time to process.
+///
+/// The `wimage` crate already implements everything needed to manipulate the images (`PalettedImage`, `TileHistory`, `downscale_mode_weighted_2x2`, ...).
+/// 
+/// ## Merge:
+/// For a Z level, take the 2x2 grid from Z-1 and merge them, forming a single image.
+///
+/// | Z levels | Processing |
+/// | 11 | original, already exist, skip |
+/// | 10-0 | 2x2 merge from z-1 |
+/// Level z-1 need to be finished before starting level z.
+/// To save on storage, we skip z=10 and merge directly from z=11 to z=9, which is a 4x4 merge. This is done by the `MergeJobDouble` job type.
+///
+/// ### Processing
+/// #### Single Reader
+/// - Read z-1 TileHistory from sqlite (2x2 grid). Note the tiles may not exist. If all tiles are missing skip the job. If at least one tile exists treat the missing ones as empty.
+/// - Read the z TileHistory from sqlite, its content will be updated by the job. Note the tile may not exist/be empty.
+/// - Reads can be batched.
+/// - Send jobs to crossbeam channel.
+///
+/// #### Many Workers
+/// - read job channel.
+/// - decode+decompress TileHistory image for DATEHOUR.
+/// - merge images.
+/// - update result TileHistory with the new image for DATEHOUR.
+/// - send to result channel, or skip if the result is identical to the existing version for DATEHOUR.
+///
+/// #### Single Writer
+/// - read result channel.
+/// - prepare batch transaction and wait for timer/enough results.
+/// - run transaction.
+/// 
+/// ## Input
+/// - SQLite db of tilehistory for z=11
+/// - the datehour time T to process
+///
+/// The sqlite db has these tables:
+/// ```sql
+/// CREATE TABLE IF NOT EXISTS tiles (
+///     z INTEGER NOT NULL,
+///     x INTEGER NOT NULL,
+///     y INTEGER NOT NULL,
+///     data BLOB NOT NULL,
+///     PRIMARY KEY (z, x, y)
+/// );
+///
+/// CREATE TABLE IF NOT EXISTS versions (
+///     date INTEGER PRIMARY KEY,
+///     original_file TEXT
+/// );
+/// ```
+/// The data blob is a `TileHistory` from `wimage`
+///
+/// ## Output
+/// - the same db, but with z<=9 populated for DATEHOUR.
+
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},

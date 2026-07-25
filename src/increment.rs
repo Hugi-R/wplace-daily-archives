@@ -331,6 +331,11 @@ pub(crate) fn process_seed(job: SeedJob) -> Result<Option<SeedResult>> {
     let image = source.get(DateHours::max()).with_context(|| {
         format!("get latest image from source tile z={z}, x={x}, y={y}")
     })?;
+    if image.is_none() {
+        // No image in the source history, skip this tile.
+        return Ok(None);
+    }
+    let image = image.unwrap();
 
     let mut seeded = TileHistory { imgs: Default::default() };
     seeded.set(DateHours(0), image).with_context(|| {
@@ -845,9 +850,9 @@ pub(crate) fn rename_archive_if_needed(
     archive_path: &Path,
     old_name: ArchiveName,
     new_date_hours: u32,
-) -> Result<()> {
+) -> Result<PathBuf> {
     if new_date_hours <= old_name.date_hours {
-        return Ok(());
+        return Ok(archive_path.to_path_buf());
     }
 
     let new_filename = archive_filename(old_name.week, new_date_hours);
@@ -861,12 +866,12 @@ pub(crate) fn rename_archive_if_needed(
         .with_context(|| format!("rename archive to {new_filename}"))?;
 
     eprintln!("Renamed archive to {new_filename}");
-    Ok(())
+    Ok(new_path)
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-pub fn increment(archives_folder: &str, increment_db: &str) -> Result<()> {
+pub fn increment(archives_folder: &str, increment_db: &str) -> Result<PathBuf> {
     let date_hours = increment_date_hours(increment_db)?;
     let inc_week = date_hours.week();
 
@@ -914,11 +919,12 @@ pub fn increment(archives_folder: &str, increment_db: &str) -> Result<()> {
     add_version(target_db, date_hours, increment_filename)?;
 
     // If we reused the existing latest archive, its filename may need a datehours bump.
+    let mut archive_path = latest_path.clone();
     if inc_week == latest_name.week {
-        rename_archive_if_needed(&latest_path, latest_name, date_hours.0)?;
+        archive_path = rename_archive_if_needed(&latest_path, latest_name, date_hours.0)?;
     }
 
-    Ok(())
+    Ok(archive_path)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -1074,7 +1080,7 @@ mod tests {
         assert_eq!(result.y, 6);
 
         let th = TileHistory::from_bytes(&result.data).unwrap();
-        let img = th.get(DateHours(100)).unwrap();
+        let img = th.get(DateHours(100)).unwrap().unwrap();
         assert!(img.indices.iter().all(|&v| v == palette::WHITE));
     }
 
@@ -1095,8 +1101,8 @@ mod tests {
 
         let th = TileHistory::from_bytes(&result.data).unwrap();
         assert_eq!(th.list().len(), 2);
-        assert!(th.get(DateHours(50)).unwrap().indices.iter().all(|&v| v == palette::BLACK));
-        assert!(th.get(DateHours(100)).unwrap().indices.iter().all(|&v| v == palette::WHITE));
+        assert!(th.get(DateHours(50)).unwrap().unwrap().indices.iter().all(|&v| v == palette::BLACK));
+        assert!(th.get(DateHours(100)).unwrap().unwrap().indices.iter().all(|&v| v == palette::WHITE));
     }
 
     #[test]
@@ -1140,12 +1146,12 @@ mod tests {
         let seeded = TileHistory::from_bytes(&result.data).unwrap();
         let dates = seeded.list();
         assert_eq!(dates, vec![DateHours(0)]);
-        let img = seeded.get(DateHours(0)).unwrap();
+        let img = seeded.get(DateHours(0)).unwrap().unwrap();
         assert!(img.indices.iter().all(|&v| v == palette::WHITE));
     }
 
     #[test]
-    fn process_seed_empty_history_errors() {
+    fn process_seed_empty_history_none() {
         let empty = TileHistory { imgs: Default::default() }.to_bytes();
         let result = process_seed(SeedJob {
             z: 11,
@@ -1153,7 +1159,8 @@ mod tests {
             y: 0,
             data: empty,
         });
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 
     // ─── rename_archive_if_needed ────────────────────────────────────────────
@@ -1225,8 +1232,8 @@ mod tests {
         let data = read_tile(&conn, 11, 1, 2).expect("tile must exist");
         let th = TileHistory::from_bytes(&data).unwrap();
         assert_eq!(th.list().len(), 2);
-        assert!(th.get(DateHours(100)).unwrap().indices.iter().all(|&v| v == palette::BLACK));
-        assert!(th.get(DateHours(5209)).unwrap().indices.iter().all(|&v| v == palette::WHITE));
+        assert!(th.get(DateHours(100)).unwrap().unwrap().indices.iter().all(|&v| v == palette::BLACK));
+        assert!(th.get(DateHours(5209)).unwrap().unwrap().indices.iter().all(|&v| v == palette::WHITE));
 
         let version: (i64, String) = conn.query_row(
             "SELECT date, original_file FROM versions WHERE date = ?1",
@@ -1290,15 +1297,15 @@ mod tests {
         let blob12 = read_tile(&conn, 11, 1, 2).expect("seeded tile (1,2) must exist");
         let th12 = TileHistory::from_bytes(&blob12).unwrap();
         assert_eq!(th12.list(), vec![DateHours(0), DateHours(5376)]);
-        assert!(th12.get(DateHours(0)).unwrap().indices.iter().all(|&v| v == palette::WHITE));
+        assert!(th12.get(DateHours(0)).unwrap().unwrap().indices.iter().all(|&v| v == palette::WHITE));
 
         // Seeded base: (3,4) should be RED at DateHours(0).
         let blob34 = read_tile(&conn, 11, 3, 4).expect("seeded tile (3,4) must exist");
         let th34 = TileHistory::from_bytes(&blob34).unwrap();
-        assert!(th34.get(DateHours(0)).unwrap().indices.iter().all(|&v| v == 7));
+        assert!(th34.get(DateHours(0)).unwrap().unwrap().indices.iter().all(|&v| v == 7));
 
         // At DateHours(5376) the increment's RED diff is applied on top of the base.
-        let img = th12.get(DateHours(5376)).unwrap();
+        let img = th12.get(DateHours(5376)).unwrap().unwrap();
         assert!(img.indices.iter().all(|&v| v == 7), "tile updated to RED");
 
         let version: i64 = conn.query_row(

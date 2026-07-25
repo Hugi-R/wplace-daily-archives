@@ -58,7 +58,7 @@
 
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, OnceLock,
 };
 use std::thread::{self, JoinHandle};
@@ -245,8 +245,9 @@ fn decode_tile_for_date(
 
     // Missing history at this date is intentionally treated as transparent.
     let image = match history.get(date_hours) {
-        Ok(image) => image,
-        Err(_) => return Ok((None, false)),
+        Ok(Some(image)) => image,
+        Ok(None) => return Ok((None, false)),
+        Err(error) => return Err(error).context("get image from TileHistory"),
     };
 
     validate_tile(&image)?;
@@ -569,6 +570,7 @@ fn read_jobs<J: TileMergeJob>(
     date_hours: DateHours,
     job_tx: Sender<J>,
     cancel: &AtomicBool,
+    tiles_read: &AtomicUsize,
 ) -> Result<()> {
     let conn = open_db(db_path)?;
 
@@ -673,6 +675,7 @@ fn read_jobs<J: TileMergeJob>(
                 if !send_with_cancel(&job_tx, cancel, job)? {
                     return Ok(());
                 }
+                tiles_read.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -730,7 +733,7 @@ fn flush_batch(
     Ok(())
 }
 
-fn writer_loop(db_path: &str, result_rx: Receiver<MergeResult>) -> Result<()> {
+fn writer_loop(db_path: &str, result_rx: Receiver<MergeResult>, tiles_written: &AtomicUsize) -> Result<()> {
     let mut conn = open_db(db_path)?;
 
     conn.pragma_update(None, "synchronous", "NORMAL")
@@ -774,6 +777,7 @@ fn writer_loop(db_path: &str, result_rx: Receiver<MergeResult>) -> Result<()> {
         written as f64 / elapsed,
     );
 
+    tiles_written.store(written, Ordering::Relaxed);
     Ok(())
 }
 
@@ -791,10 +795,10 @@ fn run_pipeline<J, Reader>(
     db_path: &str,
     reader_fn: Reader,
     process: fn(J) -> Result<Option<MergeResult>>,
-) -> Result<()>
+) -> Result<(usize, usize, usize)>
 where
     J: Send + 'static,
-    Reader: FnOnce(Sender<J>, Arc<AtomicBool>) -> Result<()> + Send + 'static,
+    Reader: FnOnce(Sender<J>, Arc<AtomicBool>, Arc<AtomicUsize>) -> Result<()> + Send + 'static,
 {
     let worker_count = merge_worker_count();
     let channel_capacity = (worker_count * 2).max(4);
@@ -804,11 +808,15 @@ where
         bounded::<MergeResult>(channel_capacity);
 
     let cancelled = Arc::new(AtomicBool::new(false));
+    let tiles_read = Arc::new(AtomicUsize::new(0));
+    let tiles_processed = Arc::new(AtomicUsize::new(0));
+    let tiles_written = Arc::new(AtomicUsize::new(0));
 
     let writer_path = db_path.to_owned();
     let writer_cancel = Arc::clone(&cancelled);
+    let writer_written = Arc::clone(&tiles_written);
     let writer = thread::spawn(move || {
-        let result = writer_loop(&writer_path, result_rx);
+        let result = writer_loop(&writer_path, result_rx, &writer_written);
 
         if result.is_err() {
             writer_cancel.store(true, Ordering::Relaxed);
@@ -825,12 +833,15 @@ where
         let result_tx = result_tx.clone();
         let processor = Arc::clone(&processor);
         let cancel = Arc::clone(&cancelled);
+        let processed = Arc::clone(&tiles_processed);
 
         workers.push(thread::spawn(move || -> Result<()> {
             for job in job_rx {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
+
+                processed.fetch_add(1, Ordering::Relaxed);
 
                 let result = match processor(job) {
                     Ok(result) => result,
@@ -859,8 +870,9 @@ where
     drop(result_tx);
 
     let reader_cancel = Arc::clone(&cancelled);
+    let reader_read = Arc::clone(&tiles_read);
     let reader = thread::spawn(move || {
-        let result = reader_fn(job_tx, Arc::clone(&reader_cancel));
+        let result = reader_fn(job_tx, Arc::clone(&reader_cancel), Arc::clone(&reader_read));
 
         if result.is_err() {
             reader_cancel.store(true, Ordering::Relaxed);
@@ -883,7 +895,11 @@ where
         result?;
     }
 
-    Ok(())
+    let read_count = tiles_read.load(Ordering::Relaxed);
+    let processed_count = tiles_processed.load(Ordering::Relaxed);
+    let written_count = tiles_written.load(Ordering::Relaxed);
+
+    Ok((read_count, processed_count, written_count))
 }
 
 // ─── Merge levels ────────────────────────────────────────────────────────────
@@ -904,9 +920,9 @@ fn merge_with<J: TileMergeJob>(
 
     let reader_path = db_path.to_owned();
 
-    run_pipeline(
+    let (tiles_read, tiles_processed, tiles_written) = run_pipeline(
         db_path,
-        move |job_tx, cancelled| {
+        move |job_tx, cancelled, tiles_read| {
             read_jobs::<J>(
                 &reader_path,
                 bounds,
@@ -915,10 +931,18 @@ fn merge_with<J: TileMergeJob>(
                 date_hours,
                 job_tx,
                 &cancelled,
+                &tiles_read,
             )
         },
         process,
-    )
+    )?;
+
+    eprintln!(
+        "  z={z}: {} tiles read, {} tiles processed, {} tiles written",
+        tiles_read, tiles_processed, tiles_written,
+    );
+
+    Ok(())
 }
 
 fn merge_level(
@@ -1096,9 +1120,9 @@ mod tests {
         let th = TileHistory::from_bytes(&result.data).unwrap();
         assert_eq!(th.list().len(), 2, "both versions must survive");
 
-        assert!(th.get(DateHours(0)).unwrap().indices.iter().all(|&v| v == 10));
+        assert!(th.get(DateHours(0)).unwrap().unwrap().indices.iter().all(|&v| v == 10));
 
-        let merged = th.get(DateHours(1)).unwrap();
+        let merged = th.get(DateHours(1)).unwrap().unwrap();
         assert_region(&merged, 0, 0, HALF_TILE_SIZE, 42);
         assert_region(
             &merged,
@@ -1134,7 +1158,7 @@ mod tests {
         .unwrap();
 
         let th = TileHistory::from_bytes(&result.data).unwrap();
-        let img = th.get(date).unwrap();
+        let img = th.get(date).unwrap().unwrap();
 
         // After two downscales, each 1000² source tile → 250×250 block.
         for row in 0..4usize {
@@ -1170,7 +1194,7 @@ mod tests {
         let img = TileHistory::from_bytes(&result.data)
             .unwrap()
             .get(date)
-            .unwrap();
+            .unwrap().unwrap();
 
         assert_region(&img, 0, 0, 250, 5);
         assert_region(&img, 250, 0, 250, palette::TRANSPARENT);
@@ -1217,8 +1241,8 @@ mod tests {
         let data = read_tile(&conn, 10, 0, 0).expect("z=10 tile must exist");
         let th = TileHistory::from_bytes(&data).unwrap();
         assert_eq!(th.list().len(), 2);
-        assert!(th.get(DateHours(1)).unwrap().indices.iter().all(|&v| v == 7));
-        assert!(th.get(DateHours(2)).unwrap().indices.iter().all(|&v| v == 8));
+        assert!(th.get(DateHours(1)).unwrap().unwrap().indices.iter().all(|&v| v == 7));
+        assert!(th.get(DateHours(2)).unwrap().unwrap().indices.iter().all(|&v| v == 8));
 
         Ok(())
     }

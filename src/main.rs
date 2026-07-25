@@ -58,8 +58,16 @@ fn main() {
             eprintln!(
                 "Incrementing from {increment} into latest archive in {archives}"
             );
-            increment::increment(&archives, &increment)
+            match increment::increment(&archives, &increment)
                 .with_context(|| "increment failed")
+            {
+                Ok(new_archive_path) => {
+                    eprintln!("Increment completed successfully. New archive path: {}", new_archive_path.display());
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+
         }
     };
 

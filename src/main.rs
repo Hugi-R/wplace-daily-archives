@@ -39,6 +39,15 @@ enum Command {
         #[arg(long)]
         increment: String,
     },
+    /// Run Increment then Merge
+    Ingest {
+        /// Folder containing the archive .db files
+        #[arg(long)]
+        archives: String,
+        /// Path to the increment SQLite db (PNG tiles at z=11)
+        #[arg(long)]
+        increment: String,
+    },
 }
 
 fn main() {
@@ -61,13 +70,28 @@ fn main() {
             match increment::increment(&archives, &increment)
                 .with_context(|| "increment failed")
             {
-                Ok(new_archive_path) => {
-                    eprintln!("Increment completed successfully. New archive path: {}", new_archive_path.display());
+                Ok((new_archive_path, date_hours)) => {
+                    eprintln!("Increment completed successfully for datehour={}. New archive path: {}", date_hours.to_datetime(), new_archive_path.display());
                     Ok(())
                 }
                 Err(e) => Err(e),
             }
-
+        }
+        Command::Ingest { archives, increment } => {
+            eprintln!(
+                "Ingesting from {increment} into latest archive in {archives}"
+            );
+            match increment::increment(&archives, &increment)
+                .with_context(|| "increment failed")
+            {
+                Ok((new_archive_path, date_hours)) => {
+                    eprintln!("Increment completed successfully for datehour={}. New archive path: {}", date_hours.to_datetime(), new_archive_path.display());
+                    eprintln!("Merging for datehour={} ({}) from {}", date_hours.0, date_hours.to_datetime(), new_archive_path.display());
+                    merge::merge(new_archive_path.to_str().unwrap(), date_hours)
+                        .with_context(|| "merge failed")
+                }
+                Err(e) => Err(e),
+            }
         }
     };
 

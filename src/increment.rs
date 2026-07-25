@@ -871,7 +871,7 @@ pub(crate) fn rename_archive_if_needed(
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-pub fn increment(archives_folder: &str, increment_db: &str) -> Result<PathBuf> {
+pub fn increment(archives_folder: &str, increment_db: &str) -> Result<(PathBuf, DateHours)> {
     let date_hours = increment_date_hours(increment_db)?;
     let inc_week = date_hours.week();
 
@@ -924,7 +924,7 @@ pub fn increment(archives_folder: &str, increment_db: &str) -> Result<PathBuf> {
         archive_path = rename_archive_if_needed(&latest_path, latest_name, date_hours.0)?;
     }
 
-    Ok(archive_path)
+    Ok((archive_path, date_hours))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

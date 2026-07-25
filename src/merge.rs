@@ -232,33 +232,26 @@ fn merge_four(tiles: [Option<PalettedImage>; 4]) -> Result<Option<PalettedImage>
 fn decode_tile_for_date(
     blob: Option<Vec<u8>>,
     date_hours: DateHours,
-) -> Result<Option<PalettedImage>> {
+) -> Result<(Option<PalettedImage>, bool)> {
     let Some(blob) = blob else {
-        return Ok(None);
+        return Ok((None, false));
     };
 
     let history =
         TileHistory::from_bytes(&blob).context("decode source TileHistory blob")?;
+    
+    // Indicates whether the history has a version for this date. This is used to determine if the merged image is new or not.
+    let has = history.has(date_hours);
 
     // Missing history at this date is intentionally treated as transparent.
     let image = match history.get(date_hours) {
         Ok(image) => image,
-        Err(_) => return Ok(None),
+        Err(_) => return Ok((None, false)),
     };
 
     validate_tile(&image)?;
 
-    // Avoid downscaling an image that is entirely transparent.
-    // Commented for now, this should never happen, as all tiles should have at least one non-transparent pixel.
-    // if image
-    //     .indices
-    //     .iter()
-    //     .all(|&value| value == palette::TRANSPARENT)
-    // {
-    //     return Ok(None);
-    // }
-
-    Ok(Some(image))
+    Ok((Some(image), has))
 }
 
 /// Encode a merged image into a TileHistory blob, preserving existing versions.
@@ -308,13 +301,19 @@ fn process_job(job: MergeJob) -> Result<Option<MergeResult>> {
     } = job;
 
     let [tl, tr, bl, br] = tiles;
-
-    let merged = merge_four([
+    let [(tl, has_tl), (tr, has_tr), (bl, has_bl), (br, has_br)] = [
         decode_tile_for_date(tl, date_hours)?,
         decode_tile_for_date(tr, date_hours)?,
         decode_tile_for_date(bl, date_hours)?,
         decode_tile_for_date(br, date_hours)?,
-    ])?;
+    ];
+
+    // If none of the source tiles have a version for this date, skip the merge.
+    if !has_tl && !has_tr && !has_bl && !has_br {
+        return Ok(None);
+    }
+
+    let merged = merge_four([tl, tr, bl, br])?;
 
     let Some(merged) = merged else {
         return Ok(None);
@@ -339,9 +338,17 @@ fn process_job_double(job: MergeJobDouble) -> Result<Option<MergeResult>> {
 
     let mut decoded: [Option<PalettedImage>; 16] =
         std::array::from_fn(|_| None);
+    let mut has_any = false;
 
     for (slot, blob) in decoded.iter_mut().zip(IntoIterator::into_iter(tiles)) {
-        *slot = decode_tile_for_date(blob, date_hours)?;
+        let has;
+        (*slot, has) = decode_tile_for_date(blob, date_hours)?;
+        has_any |= has;
+    }
+
+    // If none of the source tiles have a version for this date, skip the merge.
+    if !has_any {
+        return Ok(None);
     }
 
     let [

@@ -6,6 +6,7 @@ use wimage::tilehistory::DateHours;
 
 mod merge;
 mod validate;
+mod increment;
 
 #[derive(Parser)]
 #[command(name = "wplace-daily-archives")]
@@ -29,6 +30,15 @@ enum Command {
         /// Path to the SQLite database
         input_db: String,
     },
+    /// Add PNG tiles from an increment db into the latest archive.
+    Increment {
+        /// Folder containing the archive .db files
+        #[arg(long)]
+        archives: String,
+        /// Path to the increment SQLite db (PNG tiles at z=11)
+        #[arg(long)]
+        increment: String,
+    },
 }
 
 fn main() {
@@ -43,6 +53,13 @@ fn main() {
         Command::Validate { input_db } => {
             eprintln!("Validating tiles in {}", input_db);
             validate::validate(&input_db).with_context(|| "validate failed")
+        }
+        Command::Increment { archives, increment } => {
+            eprintln!(
+                "Incrementing from {increment} into latest archive in {archives}"
+            );
+            increment::increment(&archives, &increment)
+                .with_context(|| "increment failed")
         }
     };
 

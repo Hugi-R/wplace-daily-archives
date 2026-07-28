@@ -1,0 +1,103 @@
+/* src/styles/global.css */
+:root {
+  --button-face: #f5f5fa;
+  --button-text: #222;
+  --highlight: #cce4ff;
+  --highlight-text: #222;
+  --accent-color: #3399ff;
+  --accent-color-text: #fff;
+  --panel-bg: rgba(255,255,255,0.95);
+  --panel-bg-weak: rgba(255,255,255,0.8);
+  --border-color: #e0e0e0;
+  --shadow-lg: 0 2px 8px rgba(0,0,0,0.10);
+  --shadow-sm: 2px 2px 4px rgba(0,0,0,0.20);
+  --shadow-mid: 0 2px 8px rgba(0,0,0,0.15);
+  --outline-color: rgba(0,0,0,0.10);
+  --context-bg: var(--panel-bg);
+  --context-border: #ccc;
+  --muted-text: #888;
+  --muted-text-strong: #333;
+  --tile-overlay-stroke: rgba(0,0,255,0.5);
+  --tile-overlay-fill: rgba(0,0,255,1);
+  --tile-overlay-id-outline: rgba(255,255,255,0.95);
+  --bg: #ffffff;
+  --text-color: #222222;
+  --link-color: #1a66cc;
+  --link-visited: #5a4ea3;
+  --link-hover: #0d4fa6;
+  --input-bg: #ffffff;
+  --input-border: #dcdcdc;
+  --focus-ring: rgba(51,153,255,0.22);
+}
+
+body, html {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-color);
+  accent-color: var(--accent-color);
+  font-family: sans-serif;
+}
+
+/* MapLibre needs an explicit height chain from html → container */
+main,
+#map-wrapper,
+#map-container {
+  height: 100%;
+  width: 100%;
+}
+
+#map-container {
+  display: block;
+}
+
+input, select, textarea {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-color);
+}
+
+a { color: var(--link-color); }
+a:visited { color: var(--link-visited); }
+a:hover { color: var(--link-hover); }
+
+:focus { outline: none; }
+:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+  box-shadow: 0 0 0 4px var(--focus-ring);
+  border-radius: 4px;
+}
+
+button {
+  background: var(--button-face);
+  color: var(--button-text);
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 1rem;
+  border: none;
+  box-shadow: var(--shadow-sm);
+  outline: 2px solid var(--outline-color);
+  transition: background 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--highlight);
+  color: var(--highlight-text);
+}
+
+button.toggled {
+  background: var(--accent-color);
+  color: var(--accent-color-text);
+}
+
+/* UI visibility gate */
+.ui-hidden, .ui-hidden * {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}

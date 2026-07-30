@@ -11,10 +11,18 @@
   }
 
   let versions: ApiVersion[] = [];
+  /** Reverse map: epoch_hour string → array index. */
+  let versionIndex = new Map<string, number>();
 
-  function getDateForValue(value: number): string {
-    const idx = Math.round(value);
-    if (idx >= 0 && idx < versions.length) {
+  /** Convert the current epoch_hour to a slider index (for display). */
+  function toSliderIndex(epochHour: number): number {
+    return versionIndex.get(String(epochHour)) ?? 0;
+  }
+
+  /** Look up the date string for the current epoch_hour. */
+  function getDateForValue(epochHour: number): string {
+    const idx = versionIndex.get(String(epochHour));
+    if (idx !== undefined && idx < versions.length) {
       return versions[idx].date;
     }
     return '';
@@ -22,9 +30,9 @@
 
   function handleInput(e: Event) {
     const target = e.target as HTMLInputElement;
-    const val = parseInt(target.value, 10);
-    if (!isNaN(val)) {
-      version.set(val);
+    const idx = parseInt(target.value, 10);
+    if (!isNaN(idx) && idx < versions.length) {
+      version.set(parseInt(versions[idx].version, 10));
       syncStoresToUrl();
     }
   }
@@ -34,6 +42,7 @@
       const res = await fetch('/api/versions');
       if (res.ok) {
         versions = await res.json();
+        versionIndex = new Map(versions.map((v, i) => [v.version, i]));
       }
     } catch {
       // silently ignore fetch errors
@@ -48,7 +57,7 @@
     type="range"
     min={0}
     max={versions.length - 1}
-    value={version.get()}
+    value={toSliderIndex($version)}
     on:input={handleInput}
     list="version-datalist"
   />
@@ -57,7 +66,7 @@
       <option value={i}>{v.date}</option>
     {/each}
   </datalist>
-  <span class="date-label">{getDateForValue(version.get())}</span>
+  <span class="date-label">{getDateForValue($version)}</span>
 </div>
 
 <style>

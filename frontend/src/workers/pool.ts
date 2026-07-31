@@ -135,72 +135,14 @@ export class TileWorkerPool {
     this.processingQueue = false;
   }
 
-  async decompress(
+  async getImage(
     version: number,
     buffer: ArrayBuffer,
     signal?: AbortSignal,
   ): Promise<ArrayBuffer> {
     return this.enqueue(async (slot) => {
       if (!slot.api) throw new Error('No available worker');
-      return slot.api.decompress(version, transfer(buffer, [buffer]));
-    }, signal);
-  }
-
-  async diffDecompress(
-    baseBuffer: ArrayBuffer,
-    diffBuffer: ArrayBuffer,
-    signal?: AbortSignal,
-  ): Promise<ArrayBuffer> {
-    return this.enqueue(async (slot) => {
-      if (!slot.api) throw new Error('No available worker');
-      return slot.api.diffDecompress(
-        transfer(baseBuffer, [baseBuffer]),
-        transfer(diffBuffer, [diffBuffer]),
-      );
-    }, signal);
-  }
-
-  async downscale4to1(
-    b1: ArrayBuffer,
-    b2: ArrayBuffer,
-    b3: ArrayBuffer,
-    b4: ArrayBuffer,
-    signal?: AbortSignal,
-  ): Promise<ArrayBuffer> {
-    return this.enqueue(async (slot) => {
-      if (!slot.api) throw new Error('No available worker');
-      return slot.api.downscale4to1(
-        transfer(b1, [b1]),
-        transfer(b2, [b2]),
-        transfer(b3, [b3]),
-        transfer(b4, [b4]),
-      );
-    }, signal);
-  }
-
-  async diffDownscale4to1(
-    base1: ArrayBuffer,
-    base2: ArrayBuffer,
-    base3: ArrayBuffer,
-    base4: ArrayBuffer,
-    diff1: ArrayBuffer,
-    diff2: ArrayBuffer,
-    diff3: ArrayBuffer,
-    diff4: ArrayBuffer,
-    signal?: AbortSignal,
-  ): Promise<ArrayBuffer> {
-    return this.enqueue(async (slot) => {
-      if (!slot.api) throw new Error('No available worker');
-      return slot.api.diffDownscale4to1(
-        transfer(base1, [base1]),
-        transfer(base2, [base2]),
-        transfer(base3, [base3]),
-        transfer(base4, [base4]),
-        transfer(diff1, [diff1]),
-        transfer(diff2, [diff2]),
-        transfer(diff3, [diff3]),
-        transfer(diff4, [diff4]),
-      );
+      return slot.api.getImage(version, transfer(buffer, [buffer]));
     }, signal);
   }
 

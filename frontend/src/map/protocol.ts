@@ -63,19 +63,24 @@ export async function getTile(
   x: number,
   y: number
 ): Promise<ArrayBuffer> {
+  // There's no tile z=10 on the server, so we skip it to avoid unnecessary network requests.
+  // I have not found a way to prevent maplibre from requesting z=10 tiles *specifically*, so we just throw an error here to avoid the request.
+  if (z == 10) {
+    throw new Error('Tile z=10 is not available');
+  }
   const perfStart = performance.now();
   const week = Math.floor(version / (7 * 24));
 
   const tile = await fetch(`/tiles/${week}/${z}/${x}/${y}.zst`);
   if (tile.status !== 200) {
-    throw new Error('empty tile');
+    throw new Error('no tile');
   }
   const buffer = await tile.arrayBuffer();
 
   const perfNetworkEnd = performance.now();
   reportMetric('decompress-network', perfNetworkEnd - perfStart);
 
-  const img = await pool.decompress(version, buffer);
+  const img = await pool.getImage(version, buffer);
 
   const perfEnd = performance.now();
   reportMetric('decompress-process', perfEnd - perfNetworkEnd);

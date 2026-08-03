@@ -1,7 +1,3 @@
 [workspace]
 resolver = "3"
 members = ["pipeline", "tileserver"]
-# `frontend` is intentionally NOT a workspace member: it is a wasm cdylib built
-# with `wasm-pack`, and it needs a size-focused release profile that would
-# harm the Rust backends (opt-level="z", panic="abort", fat LTO). Declaring its
-# own [workspace] in frontend/Cargo.toml scopes that profile to the wasm build.

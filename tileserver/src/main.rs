@@ -19,7 +19,7 @@ use axum::{
     extract::{Path as AxumPath, Query, Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -295,9 +295,13 @@ struct Asset {
 }
 
 struct TileServer {
+    #[allow(dead_code)]
+    data_path: PathBuf,
     db: DatabaseManager,
-    /// Pre-computed JSON response for /api/versions.
-    versions_json: Bytes,
+    index_html: Bytes,
+    #[allow(dead_code)]
+    latest_version: String,
+    preview_image: Bytes,
     favicon: Bytes,
     assets: HashMap<String, Asset>,
 }
@@ -307,7 +311,16 @@ impl TileServer {
         let mut db = DatabaseManager::new();
         db.initialize_databases(&data_path)?;
 
-        let versions_json = build_versions_json(&db);
+        let dates = db.get_date_list();
+        let (index_html, latest_version) = build_index(&data_path, &dates)?;
+
+        let preview_image = match make_latest_image() {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Warning: failed to create preview image: {e}");
+                Bytes::new()
+            }
+        };
 
         let favicon = match fs::read(data_path.join("favicon.ico")) {
             Ok(d) => Bytes::from(d),
@@ -317,65 +330,76 @@ impl TileServer {
             }
         };
 
-        let assets = load_dist_assets(&data_path)?;
+        let assets = load_assets(&data_path)?;
 
-        Ok(Self { db, versions_json, favicon, assets })
+        Ok(Self {
+            data_path,
+            db,
+            index_html: Bytes::from(index_html),
+            latest_version,
+            preview_image,
+            favicon,
+            assets,
+        })
     }
 }
 
-/// Pre-compute the /api/versions JSON payload once at startup.
-fn build_versions_json(db: &DatabaseManager) -> Bytes {
-    let dates = db.get_date_list();
-    let versions: Vec<serde_json::Value> = dates
-        .into_iter()
-        .map(|epoch_hour| {
-            serde_json::json!({
-                "version": epoch_hour.to_string(),
-                "date": epoch_hour_to_date(epoch_hour),
-            })
+fn make_latest_image() -> Result<Bytes> {
+    Err(anyhow!("TODO"))
+}
+
+/// Loads index.html.tmpl and replaces `//$$VERSION_OPTIONS$$` with the options.
+fn build_index(data_path: &Path, dates: &[u32]) -> Result<(String, String)> {
+    let last = *dates
+        .last()
+        .ok_or_else(|| anyhow!("no versions found in the databases"))?;
+    let latest_version = format!("{:.3}", last as f64);
+
+    let tmpl_path = data_path.join("index.html.tmpl");
+    let content = fs::read_to_string(&tmpl_path)
+        .with_context(|| format!("failed to read {}", tmpl_path.display()))?;
+
+    let options: Vec<String> = dates
+        .iter()
+        .map(|&epoch_hour| {
+            format!(
+                "{{version: '{epoch_hour}', date: '{}'}}",
+                epoch_hour_to_date(epoch_hour)
+            )
         })
         .collect();
-    Bytes::from(serde_json::to_string(&versions).unwrap_or_default())
+
+    let content = content.replace("//$$VERSION_OPTIONS$$", &options.join(","));
+    Ok((content, latest_version))
 }
 
+/// Loads static assets from the assets directory.
+fn load_assets(data_path: &Path) -> Result<HashMap<String, Asset>> {
+    let folder = data_path.join("assets");
+    let entries = fs::read_dir(&folder)
+        .with_context(|| format!("failed to read assets directory {}", folder.display()))?;
 
-/// Recursively loads static files from the `dist/` directory.
-/// Each file is stored under its relative path (e.g. `_astro/app.js`).
-fn load_dist_assets(data_path: &Path) -> Result<HashMap<String, Asset>> {
-    let dist = data_path.join("dist");
     let mut assets = HashMap::new();
-    if dist.is_dir() {
-        load_dir_recursive(&dist, &dist, &mut assets)?;
-    } else {
-        warn!("dist directory not found at {}; static assets will not be served", dist.display());
-    }
-    info!("Loaded {} static asset(s)", assets.len());
-    Ok(assets)
-}
-
-fn load_dir_recursive(base: &Path, dir: &Path, assets: &mut HashMap<String, Asset>) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read directory {}", dir.display()))? {
+    for entry in entries {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
-            load_dir_recursive(base, &entry.path(), assets)?;
             continue;
         }
-        let full_path = entry.path();
-        let rel = full_path.strip_prefix(base).unwrap();
-        let key = rel.to_string_lossy().replace('\\', "/");
+        let filename = entry.file_name().to_string_lossy().into_owned();
         let data = fs::read(entry.path())
-            .with_context(|| format!("failed to read asset {key}"))?;
-        info!("Loaded asset: {} ({} bytes)", key, data.len());
+            .with_context(|| format!("failed to read asset {filename}"))?;
+        info!("Loaded asset: {filename} ({} bytes)", data.len());
         assets.insert(
-            key.clone(),
+            filename.clone(),
             Asset {
-                mime: mime_type(&key),
-                name: key,
+                mime: mime_type(&filename),
+                name: filename,
                 data: Bytes::from(data),
             },
         );
     }
-    Ok(())
+
+    Ok(assets)
 }
 
 fn mime_type(filename: &str) -> &'static str {
@@ -385,15 +409,13 @@ fn mime_type(filename: &str) -> &'static str {
         .unwrap_or_default();
 
     match ext.as_str() {
-        "js" | "mjs" => "application/javascript",
+        "js" => "application/javascript",
         "css" => "text/css",
         "html" => "text/html",
-        "json" => "application/json",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "svg" => "image/svg+xml",
         "wasm" => "application/wasm",
-        "ico" => "image/x-icon",
         _ => "application/octet-stream",
     }
 }
@@ -585,15 +607,15 @@ async fn serve_all_diff(
     }
 }
 
-/// GET /api/versions — returns the pre-computed list of available dates as JSON.
-async fn serve_versions(State(ts): State<Arc<TileServer>>) -> Response {
+async fn serve_index(State(ts): State<Arc<TileServer>>) -> Response {
+    Html(ts.index_html.clone()).into_response()
+}
+
+async fn serve_preview(State(ts): State<Arc<TileServer>>) -> Response {
     (
         StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        )],
-        ts.versions_json.clone(),
+        [(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))],
+        ts.preview_image.clone(),
     )
         .into_response()
 }
@@ -610,65 +632,22 @@ async fn serve_favicon(State(ts): State<Arc<TileServer>>) -> Response {
         .into_response()
 }
 
-/// Fallback handler for static frontend assets.
-/// Serves files from the dist directory, with index.html resolution for
-/// directory paths (e.g. `/en/` → `en/index.html`).
-async fn serve_static(State(ts): State<Arc<TileServer>>, request: Request) -> Response {
-    let path = request.uri().path();
-    // Asset keys don't have a leading '/', but request paths do.
-    let key = path.strip_prefix('/').unwrap_or(path);
-    let key = if key.is_empty() { "index.html" } else { key };
-
-    // Try exact match first (e.g. `/_astro/app.js`)
-    if let Some(asset) = ts.assets.get(key) {
-        return (
+async fn serve_asset(
+    State(ts): State<Arc<TileServer>>,
+    AxumPath(filename): AxumPath<String>,
+) -> Response {
+    match ts.assets.get(&filename) {
+        Some(asset) => (
             StatusCode::OK,
-            [
-                (
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static(asset.mime),
-                ),
-                (
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static("public, max-age=86400"),
-                ),
-            ],
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(asset.mime),
+            )],
             asset.data.clone(),
         )
-            .into_response();
+            .into_response(),
+        None => text_error(StatusCode::NOT_FOUND, "404 page not found"),
     }
-
-    // If the key ends with '/', try `{key}index.html`
-    if key.ends_with('/') {
-        let index_path = format!("{key}index.html");
-        if let Some(asset) = ts.assets.get(&index_path) {
-            return (
-                StatusCode::OK,
-                [
-                    (
-                        header::CONTENT_TYPE,
-                        HeaderValue::from_static(asset.mime),
-                    ),
-                    (
-                        header::CACHE_CONTROL,
-                        HeaderValue::from_static("public, max-age=86400"),
-                    ),
-                ],
-                asset.data.clone(),
-            )
-                .into_response();
-        }
-    }
-
-    // If no trailing slash and `{key}/index.html` exists, redirect to `{path}/`
-    if !key.ends_with('/') {
-        let index_path = format!("{key}/index.html");
-        if ts.assets.contains_key(&index_path) {
-            return Redirect::permanent(&format!("{path}/")).into_response();
-        }
-    }
-
-    text_error(StatusCode::NOT_FOUND, "404 page not found")
 }
 
 /// Logs HTTP requests (equivalent of the Go `loggingMiddleware`).
@@ -719,9 +698,10 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/tiles/{version}/{z}/{x}/{y}", get(serve_tile))
         .route("/diff/all/{z}/{x}/{y}", get(serve_all_diff))
-        .route("/api/versions", get(serve_versions))
+        .route("/", get(serve_index))
+        .route("/preview.png", get(serve_preview))
         .route("/favicon.ico", get(serve_favicon))
-        .fallback(serve_static)
+        .route("/assets/{filename}", get(serve_asset))
         .layer(middleware::from_fn(logging_middleware))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(15))) // ~ Read/WriteTimeout
         .with_state(tile_server);

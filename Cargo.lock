@@ -1434,7 +1434,6 @@ dependencies = [
  "rusqlite",
  "scheduled-thread-pool",
  "serde",
- "serde_json",
  "thiserror",
  "tokio",
  "tower-http",

@@ -365,48 +365,6 @@
         });
       }
 
-      async diff_decompress(baseBuffer, diffBuffer) {
-        return new Promise((resolve, reject) => {
-          const taskId = this.taskIdCounter++;
-          const task = { type: 'decompress-diff', taskId, buffers: [baseBuffer, diffBuffer], resolve, reject };
-          
-          const availableWorker = this.workers.find(w => !w.busy && w.ready);
-          if (availableWorker) {
-            this.executeTask(availableWorker, task);
-          } else {
-            this.taskQueue.push(task);
-          }
-        });
-      }
-
-      async downscale_4to1(compressed1, compressed2, compressed3, compressed4) {
-        return new Promise((resolve, reject) => {
-          const taskId = this.taskIdCounter++;
-          const task = { type: 'downscale', taskId, buffers: [compressed1, compressed2, compressed3, compressed4], resolve, reject };
-          
-          const availableWorker = this.workers.find(w => !w.busy);
-          if (availableWorker) {
-            this.executeTask(availableWorker, task);
-          } else {
-            this.taskQueue.push(task);
-          }
-        });
-      }
-
-      async diff_downscale_4to1(baseCompressed1, baseCompressed2, baseCompressed3, baseCompressed4, diffCompressed1, diffCompressed2, diffCompressed3, diffCompressed4) {
-        return new Promise((resolve, reject) => {
-          const taskId = this.taskIdCounter++;
-          const task = { type: 'downscale-diff', taskId, buffers: [baseCompressed1, baseCompressed2, baseCompressed3, baseCompressed4, diffCompressed1, diffCompressed2, diffCompressed3, diffCompressed4], resolve, reject };
-          
-          const availableWorker = this.workers.find(w => !w.busy);
-          if (availableWorker) {
-            this.executeTask(availableWorker, task);
-          } else {
-            this.taskQueue.push(task);
-          }
-        });
-      }
-
       executeTask(worker, task) {
         worker.busy = true;
         this.activeTasks.set(task.taskId, task);
@@ -428,7 +386,7 @@
           }
         }
 
-        if (type === 'decompress-result' || type === 'downscale-result') {
+        if (type === 'decompress-result') {
           console.log("Got result", taskId, arrayBuffer);
           const task = this.activeTasks.get(taskId);
           if (task) {
@@ -586,6 +544,11 @@
     // Register custom protocol
     maplibregl.addProtocol('merged', async (params, abortControler) => {
       const { version, z, x, y } = parseTileUrl(params.url);
+
+      // abort if z=10 as we don't store that level
+      if (z === 10) {
+        throw new Error("z=10 tiles are not stored");
+      }
 
       const cache = typeof caches !== 'undefined' ? await caches.open("merged-tiles") : null;
       const cacheKey = `tile-${version}-${z}-${x}-${y}`;
@@ -945,7 +908,7 @@
     async function initWasm() {
       if (wasmModule === null) {
         const { default: init, init_panic_hook, wasm_screenshot, wasm_video } =
-            await import('/assets/wplacearchive.js');
+            await import('/assets/wimage_wasm.js');
         await init();
         init_panic_hook();
         wasmModule = { wasm_screenshot, wasm_video };

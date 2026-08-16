@@ -1,7 +1,62 @@
 /// Implements the `makebase --base BASE_DB --output ARCHIVE_DB [--datehours DATEHOURS]` command.
 /// Convert the base image PNGs from BASE_DB into a fresh ARCHIVE_DB as TileHistory blobs at z=11.
 ///
-/// See `tasks/task_03_makebase.md` for the full spec.
+/// ## Input
+/// ### BASE_DB
+/// SQLite db containing the base images for the archive.
+/// 
+/// The sqlite db has these tables:
+/// ```sql
+/// CREATE TABLE IF NOT EXISTS tiles (
+///     x INTEGER NOT NULL,
+///     y INTEGER NOT NULL,
+///     data BLOB NOT NULL,
+/// );
+/// ```
+/// The data blob is a PNG image. The z level is implicitly 11.
+/// 
+/// ### DATEHOURS
+/// The datehours to set the base images to. Given as a u32 number of hours since
+/// 2025-01-01T00:00:00Z. Default to 0.
+/// 
+/// ## Output
+/// ### ARCHIVE_DB
+/// A new SQLite db to be created with the base images, using the archive schema from
+/// `common.rs` (`create_empty_archive`):
+/// 
+/// ```sql
+/// CREATE TABLE IF NOT EXISTS tiles (
+///     z INTEGER NOT NULL,
+///     x INTEGER NOT NULL,
+///     y INTEGER NOT NULL,
+///     data BLOB NOT NULL,
+///     PRIMARY KEY (z, x, y)
+/// );
+/// 
+/// CREATE TABLE IF NOT EXISTS versions (
+///     date INTEGER PRIMARY KEY,
+///     original_file TEXT
+/// );
+/// ```
+/// The data blob is a `TileHistory` from `wimage`.
+/// 
+/// Only the z=11 level is written. Lower zoom levels are built later by the separate
+/// `merge` command, like the `increment` → `merge` flow. `ARCHIVE_DB` may be any
+/// user-chosen path; the user is responsible for naming it `w<week>_<datehours>.db`
+/// so that `increment` can later discover it.
+/// 
+/// ## Processing
+/// For every PNG tile in BASE_DB, store it in ARCHIVE_DB at (z=11, x, y) as a
+/// TileHistory whose only version is the image at DATEHOURS.
+/// 
+/// For every PNG:
+/// - Read the PNG blob and convert it to Paletted (`PalettedImage.from_png`).
+/// - Create a fresh TileHistory and set the PalettedImage at DATEHOURS (`TileHistory.set`).
+///   Since the history is new, the image is stored as a full (base) image.
+/// - Serialize the TileHistory (`TileHistory.to_bytes`) and write it to ARCHIVE_DB.
+/// 
+/// If `DATEHOURS != 0`, also add a row to the `versions` table:
+/// `date=DATEHOURS`, `original_file=BASE_DB file name (name only, not the path)`.
 
 use std::io::Cursor;
 use std::path::Path;

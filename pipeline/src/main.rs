@@ -7,6 +7,7 @@ use wimage::tilehistory::DateHours;
 mod merge;
 mod validate;
 mod increment;
+mod common;
 
 #[derive(Parser)]
 #[command(name = "wplace-daily-archives")]

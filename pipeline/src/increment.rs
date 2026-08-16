@@ -97,6 +97,8 @@ use rusqlite::{params, Connection};
 use wimage::tilehistory::{DateHours, TileHistory};
 use wimage::PalettedImage;
 
+use crate::common::{open_db, enable_wal, create_empty_archive};
+
 const Z_TARGET: i32 = 11;
 const WRITE_BATCH_SIZE: usize = 256;
 const DEFAULT_MAX_WORKERS: usize = 16;
@@ -241,48 +243,6 @@ pub fn find_latest_archive(archives_folder: &str) -> Result<Option<PathBuf>> {
     }
 
     Ok(latest.map(|(_, path)| path))
-}
-
-// ─── SQLite helpers ──────────────────────────────────────────────────────────
-
-fn open_db(path: &str) -> Result<Connection> {
-    let conn = Connection::open(path)
-        .with_context(|| format!("open database {path}"))?;
-
-    conn.busy_timeout(Duration::from_secs(30))
-        .context("set SQLite busy timeout")?;
-
-    Ok(conn)
-}
-
-fn enable_wal(path: &str) -> Result<()> {
-    let conn = Connection::open(path)
-        .with_context(|| format!("open database {path}"))?;
-
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .context("enable WAL mode")?;
-
-    Ok(())
-}
-
-pub fn create_empty_archive(path: &str) -> Result<()> {
-    let conn = open_db(path)?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS tiles (
-            z INTEGER NOT NULL,
-            x INTEGER NOT NULL,
-            y INTEGER NOT NULL,
-            data BLOB NOT NULL,
-            PRIMARY KEY (z, x, y)
-        );
-        CREATE INDEX IF NOT EXISTS tiles_z_y_x_idx ON tiles (z, y, x);
-        CREATE TABLE IF NOT EXISTS versions (
-            date INTEGER PRIMARY KEY,
-            original_file TEXT
-        );",
-    )
-    .with_context(|| format!("create empty archive tables at {path}"))?;
-    Ok(())
 }
 
 // ─── Processors ──────────────────────────────────────────────────────────────

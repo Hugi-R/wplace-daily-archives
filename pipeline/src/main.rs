@@ -109,11 +109,6 @@ fn main() {
         }
         Command::Makebase { base, output, datehours } => {
             let date_hours = DateHours(datehours);
-            eprintln!(
-                "Creating base archive {output} from {base} at datehour={} ({})",
-                date_hours.0,
-                date_hours.to_datetime(),
-            );
             makebase::makebase(&base, &output, date_hours).with_context(|| "makebase failed")
         }
     };

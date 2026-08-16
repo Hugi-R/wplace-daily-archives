@@ -353,21 +353,30 @@ pub fn makebase(base_db: &str, output_db: &str, date_hours: DateHours) -> Result
     let base_path = base_db.to_owned();
     let output_path = output_db.to_owned();
 
-    run_pipeline(
+    let result = run_pipeline(
         &output_path,
         move |job_tx, total_tx, cancel| {
             read_jobs(&base_path, date_hours, job_tx, total_tx, &cancel)
         },
         process_job,
         writer_loop,
-    )?;
+    )
+    .and_then(|()| {
+        if date_hours != DateHours(0) {
+            let base_filename = Path::new(base_db)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| anyhow!("base db path has no filename: {base_db}"))?;
+            add_version(output_db, date_hours, base_filename)
+        } else {
+            Ok(())
+        }
+    });
 
-    if date_hours != DateHours(0) {
-        let base_filename = Path::new(base_db)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("base db path has no filename: {base_db}"))?;
-        add_version(output_db, date_hours, base_filename)?;
+    if let Err(error) = result {
+        // Remove the freshly created output so the caller can retry.
+        let _ = std::fs::remove_file(output_db);
+        return Err(error);
     }
 
     Ok(())
@@ -558,6 +567,29 @@ mod tests {
 
         let result = makebase(base.to_str().unwrap(), out.to_str().unwrap(), DateHours(0));
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn makebase_midrun_failure_removes_partial_archive() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path().join("base.db");
+        let out = tmp.path().join("w0_0.db");
+
+        // One valid PNG tile and one garbage blob that will fail PNG decode.
+        create_base_db(
+            base.to_str().unwrap(),
+            &[
+                (1, 2, png_for(palette::WHITE)),
+                (3, 4, b"not a png".to_vec()),
+            ],
+        )?;
+
+        let out_str = out.to_str().unwrap();
+        let result = makebase(base.to_str().unwrap(), out_str, DateHours(0));
+
+        assert!(result.is_err());
+        assert!(!Path::new(out_str).exists());
         Ok(())
     }
 }

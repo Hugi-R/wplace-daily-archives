@@ -538,7 +538,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "once_cell",
  "png",
  "zstd",
 ]

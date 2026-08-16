@@ -7,6 +7,7 @@ use wimage::tilehistory::DateHours;
 mod merge;
 mod validate;
 mod increment;
+mod makebase;
 mod common;
 
 #[derive(Parser)]

@@ -2,4 +2,4 @@
 /tmp*
 .swival
 *.db*
-.agents
+.agents.worktrees

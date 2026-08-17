@@ -3,7 +3,6 @@ let wasmModule = null;
 // Initialize WASM module when worker starts
 self.onmessage = async (event) => {
     const { type, data } = event.data;
-    console.log(`Worker received message of type: ${type}. Loaded WASM: ${wasmModule !== null}`);
 
     if (type === 'init') {
         // Load WASM module once
@@ -17,9 +16,7 @@ self.onmessage = async (event) => {
     }
 
     if (type === 'decompress' && wasmModule) {
-        console.log(data);
         const { taskId, version, buffers } = data;
-        console.log(`Worker received decompress task ${taskId} for version ${version}`);
         try {
             const uint8Array = new Uint8Array(buffers[0]);
             // compressed_bytes_to_png_blob returns a Uint8Array (PNG bytes)
@@ -34,7 +31,6 @@ self.onmessage = async (event) => {
                 arrayBuffer,
                 error: null
             }, [arrayBuffer]); // Transfer ownership
-            console.log(`Worker completed decompress task ${taskId}`);
         } catch (error) {
             self.postMessage({
                 type: 'decompress-result',

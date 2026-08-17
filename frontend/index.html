@@ -234,6 +234,53 @@
       color: var(--button-text);
     }
     #context-menu > div { padding: 8px 24px; cursor: pointer; }
+    #export-panel {
+      position: fixed;
+      top: 0;
+      right: 0;
+      height: 100%;
+      width: 280px;
+      z-index: 200;
+      background: var(--panel-bg);
+      border-left: 1px solid var(--border-color);
+      box-shadow: var(--shadow-lg);
+      box-sizing: border-box;
+      padding: 12px;
+      overflow-y: auto;
+      display: none;
+      font-size: 14px;
+    }
+    #export-panel.open { display: block; }
+    #export-panel h2 { margin: 0 0 10px; font-size: 16px; }
+    #export-panel section { margin-bottom: 12px; }
+    #export-panel label { display: block; margin: 4px 0; }
+    #export-panel input[type="number"],
+    #export-panel select { width: 100%; box-sizing: border-box; }
+    .export-bounds { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .export-bounds input { width: 100%; box-sizing: border-box; }
+    #export-info { font-weight: bold; }
+    #export-hint { color: #b00; display: none; }
+    #export-hint.show { display: block; }
+    #export-date-section { display: none; }
+    #export-status { margin: 8px 0; font-size: 13px; max-height: 160px; overflow-y: auto; }
+    #export-status.error { color: #b00; }
+    #export-close {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+      cursor: pointer;
+      font-size: 18px;
+      color: var(--muted-text);
+      background: transparent;
+      border: none;
+      padding: 0;
+      line-height: 1;
+    }
+    #export-close:hover { color: var(--muted-text-strong); }
+    body.export-open #extra,
+    body.export-open .zoom-button-container,
+    body.export-open #transparency-toggle,
+    body.export-open #version-select { display: none !important; }
   </style>
 </head>
 <body>
@@ -268,18 +315,48 @@
         <p><a href="https://wplace.eralyon.net">Back to stable.</a></p>  
       </div>
     </div>
-    <div id="screenshot">
-      <button id="screenshot-btn" title="Take pixel perfect screenshot">Screenshot</button>
-      <button id="video-btn" title="Take video">Video</button>
+    <div id="export-wrap">
+      <button id="export-btn" title="Export the current map area">Export</button>
     </div>
     <div id="stats" style="z-index: 3; max-width: 300px; background: var(--panel-bg); padding: 10px; border-radius: 4px; box-shadow: var(--shadow-lg); font-size: 14px;">
       <p>Decompress: <span id="decompress-stats">NA</span></p>
       <p>Decompress Network: <span id="decompress-network-stats">NA</span></p>
       <p>Decompress Process: <span id="decompress-process-stats">NA</span></p>
     </div>
-    <div id="user-messages" style="z-index: 3; max-width: 300px; background: var(--panel-bg); padding: 10px; border-radius: 4px; box-shadow: var(--shadow-lg); font-size: 14px;">
-      <!-- User messages from Rust will appear here -->
-    </div>
+  </div>
+  <div id="export-panel">
+    <button id="export-close" aria-label="Close export panel" title="Close">&times;</button>
+    <h2>Export</h2>
+    <section>
+      <label><input type="radio" name="export-type" id="export-type-png" value="png" checked> Static PNG</label>
+      <label><input type="radio" name="export-type" id="export-type-apng" value="apng"> Animated PNG</label>
+    </section>
+    <section>
+      <label for="export-z">Target z level</label>
+      <select id="export-z"></select>
+    </section>
+    <section>
+      <label>Tile bounds</label>
+      <div class="export-bounds">
+        <label>Min X <input type="number" id="export-x1" step="1"></label>
+        <label>Max X <input type="number" id="export-x2" step="1"></label>
+        <label>Min Y <input type="number" id="export-y1" step="1"></label>
+        <label>Max Y <input type="number" id="export-y2" step="1"></label>
+      </div>
+    </section>
+    <section id="export-date-section">
+      <label for="export-start">Start date</label>
+      <select id="export-start"></select>
+      <label for="export-end">End date</label>
+      <select id="export-end"></select>
+      <div id="export-last-frame"></div>
+    </section>
+    <section>
+      <div id="export-info">&nbsp;</div>
+      <div id="export-hint"></div>
+      <div id="export-status"></div>
+      <button id="export-run-btn" disabled>Export</button>
+    </section>
   </div>
   <div class="zoom-button-container">
     <button class="zoom-button" title="Zoom In" onclick="zoomIn()">
@@ -771,6 +848,20 @@
       if (isNaN(zoom)) return;
       map.zoomTo(zoom);
     }
+
+    // Export panel open/close (state computation is added in a later step)
+    const exportPanel = document.getElementById('export-panel');
+    const exportParams = { z: 11, x1: 0, y1: 0, x2: 0, y2: 0, type: 'png', from: null, to: null, savedVersion: null };
+    function openExportPanel() {
+      document.body.classList.add('export-open');
+      exportPanel.classList.add('open');
+    }
+    function closeExportPanel() {
+      document.body.classList.remove('export-open');
+      exportPanel.classList.remove('open');
+    }
+    document.getElementById('export-btn').addEventListener('click', openExportPanel);
+    document.getElementById('export-close').addEventListener('click', closeExportPanel);
 
     // Map coordinate conversion functions
     function lng2tileX(lng, z) {

@@ -536,7 +536,7 @@ struct DiffQuery {
     to: Option<String>,
 }
 
-/// GET /diff/all/{z}/{x}/{y}.zst?from=&to=   (only z = 11 is supported)
+/// GET /diff/all/{z}/{x}/{y}.zst?from=&to=   (any stored z (0..9, 11) is supported; z=10 has no stored tiles)
 async fn serve_all_diff(
     State(ts): State<Arc<TileServer>>,
     AxumPath((z_str, x_str, y_str)): AxumPath<(String, String, String)>,
@@ -551,12 +551,6 @@ async fn serve_all_diff(
         Ok(v) => v,
         Err(e) => return text_error(StatusCode::BAD_REQUEST, e),
     };
-    if z != 11 {
-        return text_error(
-            StatusCode::BAD_REQUEST,
-            "diff tiles only supported for z=11",
-        );
-    }
 
     let from_str = q.from.as_deref().unwrap_or("").trim().to_owned();
     let to_str = q.to.as_deref().unwrap_or("").trim().to_owned();
@@ -599,6 +593,7 @@ async fn serve_all_diff(
 
     let state = ts.clone();
     match tokio::task::spawn_blocking(move || state.db.get_all_diffs(z, x, y, from, to)).await {
+        Ok(body) if body.is_empty() => text_error(StatusCode::NOT_FOUND, "diff not found"),
         Ok(body) => (StatusCode::OK, out_headers, body).into_response(),
         Err(e) => {
             error!("Blocking task failed: {e}");
@@ -672,6 +667,19 @@ async fn logging_middleware(req: Request, next: Next) -> Response {
 // main
 // ---------------------------------------------------------------------------
 
+fn build_router(tile_server: Arc<TileServer>) -> Router {
+    Router::new()
+        .route("/tiles/{version}/{z}/{x}/{y}", get(serve_tile))
+        .route("/diff/all/{z}/{x}/{y}", get(serve_all_diff))
+        .route("/", get(serve_index))
+        .route("/preview.png", get(serve_preview))
+        .route("/favicon.ico", get(serve_favicon))
+        .route("/assets/{filename}", get(serve_asset))
+        .layer(middleware::from_fn(logging_middleware))
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(15))) // ~ Read/WriteTimeout
+        .with_state(tile_server)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -692,19 +700,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    // NOTE: axum 0.8 path syntax is `{param}` (it was `:param` in axum 0.7).
-    // A path parameter always matches a whole segment, so `{y}` captures
-    // "0.zst" and the handler strips the extension.
-    let app = Router::new()
-        .route("/tiles/{version}/{z}/{x}/{y}", get(serve_tile))
-        .route("/diff/all/{z}/{x}/{y}", get(serve_all_diff))
-        .route("/", get(serve_index))
-        .route("/preview.png", get(serve_preview))
-        .route("/favicon.ico", get(serve_favicon))
-        .route("/assets/{filename}", get(serve_asset))
-        .layer(middleware::from_fn(logging_middleware))
-        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(15))) // ~ Read/WriteTimeout
-        .with_state(tile_server);
+    let app = build_router(tile_server);
 
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -722,4 +718,134 @@ async fn shutdown_signal() {
     info!("Shutting down");
     // Dropping the Arc<TileServer> closes every pooled SQLite connection,
     // which is the equivalent of Go's `defer tileServer.Close()`.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// One TileHistory frame entry: [u32 LE date][u32 LE block_size][block_size payload bytes].
+    fn entry(date: u32, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&date.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn create_week_db(dir: &std::path::Path, week: u32, z: i64, x: i64, y: i64, data: Vec<u8>) {
+        std::fs::create_dir_all(dir).unwrap();
+        let conn = rusqlite::Connection::open(dir.join(format!("w{week}_0.db"))).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tiles (z INTEGER NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (z, x, y));
+             CREATE TABLE versions (date INTEGER PRIMARY KEY, original_file TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tiles (z, x, y, data) VALUES (?1, ?2, ?3, ?4)",
+            params![z, x, y, data],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO versions (date, original_file) VALUES (0, 'test')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn rich_week1_blob() -> Vec<u8> {
+        let mut b = entry(0, &[0xCC, 0xDD]); // full-image header in this week (skipped by concat logic)
+        b.extend(entry(7, &[0xEE])); // the actual change
+        b
+    }
+
+    #[test]
+    fn get_all_diffs_concatenates_lower_zoom_levels() {
+        let base = entry(0, &[0xAA, 0xBB]);
+        let w1 = rich_week1_blob();
+        let expect = {
+            let mut e = base.clone();
+            e.extend(entry(7, &[0xEE]));
+            e
+        };
+
+        for z in [9i64, 0i64] {
+            let tmp = tempfile::tempdir().unwrap();
+            create_week_db(tmp.path(), 0, z, 0, 0, base.clone());
+            create_week_db(tmp.path(), 1, z, 0, 0, w1.clone());
+
+            let mut mgr = DatabaseManager::new();
+            mgr.initialize_week_databases(tmp.path()).unwrap();
+
+            assert_eq!(
+                mgr.get_all_diffs(z, 0, 0, 0, u32::MAX),
+                expect,
+                "z={z} concatenation mismatch"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn diff_endpoint_serves_lower_zoom_levels() {
+        let base = entry(0, &[0xAA, 0xBB]);
+        let w1 = rich_week1_blob();
+
+        let tmp = tempfile::tempdir().unwrap();
+        create_week_db(&tmp.path().join("weeks"), 0, 9, 0, 0, base.clone());
+        create_week_db(&tmp.path().join("weeks"), 1, 9, 0, 0, w1.clone());
+        std::fs::write(
+            tmp.path().join("index.html.tmpl"),
+            "<html><!-- //$$VERSION_OPTIONS$$ --></html>",
+        )
+        .unwrap();
+        std::fs::create_dir(tmp.path().join("assets")).unwrap();
+
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/diff/all/9/0/0.zst?from=0&to=4294967295")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let mut expected = base.clone();
+        expected.extend(entry(7, &[0xEE]));
+        assert_eq!(&body[..], &expected[..]);
+    }
+
+    #[tokio::test]
+    async fn diff_endpoint_unstored_z_is_404() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_week_db(&tmp.path().join("weeks"), 0, 9, 0, 0, entry(0, &[0xAA]));
+        std::fs::write(
+            tmp.path().join("index.html.tmpl"),
+            "<html><!-- //$$VERSION_OPTIONS$$ --></html>",
+        )
+        .unwrap();
+        std::fs::create_dir(tmp.path().join("assets")).unwrap();
+
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/diff/all/10/0/0.zst?from=0&to=4294967295")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
 }

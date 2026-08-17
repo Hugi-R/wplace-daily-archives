@@ -593,6 +593,9 @@ async fn serve_all_diff(
 
     let state = ts.clone();
     match tokio::task::spawn_blocking(move || state.db.get_all_diffs(z, x, y, from, to)).await {
+        // An empty diff means either the tile does not exist at this z (z=10 is
+        // intentionally not stored, and /diff/all is open to any z) or no frame in
+        // the requested range changed this tile; both are "nothing to render".
         Ok(body) if body.is_empty() => text_error(StatusCode::NOT_FOUND, "diff not found"),
         Ok(body) => (StatusCode::OK, out_headers, body).into_response(),
         Err(e) => {

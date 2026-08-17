@@ -1253,6 +1253,66 @@
       }
     }
 
+    function saveFile(name, bytes) {
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    document.getElementById("export-run-btn").addEventListener("click", async () => {
+      const status = document.getElementById('export-status');
+      status.textContent = "";
+      status.classList.remove('error');
+      const runBtn = document.getElementById('export-run-btn');
+      const cap = exportParams.type === 'apng' ? APNG_MAX_TILES : PNG_MAX_TILES;
+      const count = (exportParams.x2 - exportParams.x1 + 1) * (exportParams.y2 - exportParams.y1 + 1);
+      if (count > cap) return;
+      try {
+        await initWasm();
+        const z = BigInt(exportParams.z);
+        const x1 = BigInt(exportParams.x1), y1 = BigInt(exportParams.y1);
+        const x2 = BigInt(exportParams.x2), y2 = BigInt(exportParams.y2);
+        exportParams.from = document.getElementById('export-start').value;
+        exportParams.to = document.getElementById('export-end').value;
+        const from = parseInt(exportParams.from, 10);
+        const to = parseInt(exportParams.to, 10);
+        const label = runBtn.textContent;
+        runBtn.disabled = true;
+        runBtn.textContent = "Exporting…";
+        try {
+          if (exportParams.type === 'png') {
+            const version = parseInt(wplaceVersion, 10);
+            const data = await wasmModule.wasm_screenshot("tiles", z, version, x1, y1, x2, y2);
+            saveFile(`w${version}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
+          } else {
+            const data = await wasmModule.wasm_video("diff", z, x1, y1, x2, y2, from, to);
+            saveFile(`w${from}-${to}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
+          }
+          status.textContent = "Done.";
+        } finally {
+          runBtn.textContent = label;
+          recomputeExportInfo(); // re-sets #export-run-btn.disabled from the current caps
+        }
+      } catch (e) {
+        status.classList.add('error');
+        status.textContent = `Export failed: ${e}`;
+        console.error(e);
+      }
+    });
+
+    window.log_user_message = async function(message) {
+      const status = document.getElementById('export-status');
+      const p = document.createElement('p');
+      p.textContent = message;
+      status.appendChild(p);
+      return new Promise(resolve => setTimeout(resolve, 50)); // ensure message renders before heavy wasm work
+    };
+
     </script>
 </body>
 </html>

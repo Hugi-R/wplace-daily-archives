@@ -51,7 +51,7 @@ pub fn init_panic_hook() {
 }
 
 #[wasm_bindgen]
-pub async fn wasm_screenshot(base_url: &str, version: u32, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<Vec<u8>, JsValue> {
+pub async fn wasm_screenshot(base_url: &str, z: i64, version: u32, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<Vec<u8>, JsValue> {
     let mut target = init_img(x1, y1, x2, y2, palette::TRANSPARENT);
     let version = DateHours(version);
 
@@ -66,7 +66,7 @@ pub async fn wasm_screenshot(base_url: &str, version: u32, x1: i64, y1: i64, x2:
 
     for y in y1..(y2+1) {
         for x in x1..(x2+1) {
-            let url = format!("{}/{}/11/{}/{}.zst", base_url, version.week(), x, y);
+            let url = format!("{}/{}/{}/{}/{}.zst", base_url, version.week(), z, x, y);
             log_user_message(format!("Downloading {}", url).as_str()).await;
             let request = Request::new_with_str_and_init(&url, &opts)?;
             let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
@@ -110,7 +110,7 @@ pub async fn wasm_screenshot(base_url: &str, version: u32, x1: i64, y1: i64, x2:
 }
 
 #[wasm_bindgen]
-pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64, from: u32, to: u32) -> Result<Vec<u8>, JsValue> {
+pub async fn wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i64, from: u32, to: u32) -> Result<Vec<u8>, JsValue> {
     use std::collections::HashMap;
     
     let opts = RequestInit::new();
@@ -125,7 +125,7 @@ pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64, from
     let mut history:HashMap<(u16, u16), TileHistory> = HashMap::new();
     for y in y1..(y2+1) {
         for x in x1..(x2+1) {
-            let url = format!("{}/all/11/{}/{}.zst?from={}&to={}", base_url, x, y, from, to);
+            let url = format!("{}/all/{}/{}/{}.zst?from={}&to={}", base_url, z, x, y, from, to);
             log_user_message(format!("Downloading {}", url).as_str()).await;
             let request = Request::new_with_str_and_init(&url, &opts)?;
             let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;

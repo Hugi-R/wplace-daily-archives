@@ -905,11 +905,21 @@
       exportParams.savedVersion = null;
       document.getElementById('export-type-png').checked = true;
       populateDateSelects();
+      ensureExportOverlay();
+      map.on('move', drawExportOverlay);
+      map.on('zoom', drawExportOverlay);
+      map.on('resize', drawExportOverlay);
       recomputeExportInfo();
     }
     function closeExportPanel() {
       document.body.classList.remove('export-open');
       exportPanel.classList.remove('open');
+      restoreSavedMapVersion();
+      map.off('move', drawExportOverlay);
+      map.off('zoom', drawExportOverlay);
+      map.off('resize', drawExportOverlay);
+      const canvas = document.getElementById('export-overlay-canvas');
+      if (canvas) canvas.remove();
     }
     document.getElementById('export-btn').addEventListener('click', openExportPanel);
     document.getElementById('export-close').addEventListener('click', closeExportPanel);
@@ -1058,7 +1068,47 @@
       if (exportParams.type === 'apng') switchMapToVersion(e.value);
       recomputeExportInfo();
     });
-    function drawExportOverlay() {} // real overlay added in Task 5
+    function ensureExportOverlay() {
+      if (document.getElementById('export-overlay-canvas')) return;
+      const canvas = document.createElement('canvas');
+      canvas.id = 'export-overlay-canvas';
+      canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:6;';
+      document.getElementById('map').appendChild(canvas);
+    }
+    function drawExportOverlay() {
+      const canvas = document.getElementById('export-overlay-canvas');
+      if (!canvas) return;
+      const container = document.getElementById('map');
+      if (canvas.width !== container.offsetWidth || canvas.height !== container.offsetHeight) {
+        canvas.width = container.offsetWidth;
+        canvas.height = container.offsetHeight;
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const z = exportParams.z;
+      const west = tile2lng(exportParams.x1, z);
+      const east = tile2lng(exportParams.x2 + 1, z);
+      const north = tile2lat(exportParams.y1, z);
+      const south = tile2lat(exportParams.y2 + 1, z);
+      const p1 = map.project([west, north]);
+      const p2 = map.project([east, south]);
+      const w = p2.x - p1.x;
+      const h = p2.y - p1.y;
+      ctx.fillStyle = 'rgba(0,0,255,0.15)';
+      ctx.strokeStyle = 'rgba(0,0,255,0.85)';
+      ctx.lineWidth = 2;
+      ctx.fillRect(p1.x, p1.y, w, h);
+      ctx.strokeRect(p1.x, p1.y, w, h);
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'left';
+      const label = `${exportParams.x2 - exportParams.x1 + 1}×${exportParams.y2 - exportParams.y1 + 1}`;
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(label, p1.x + 6, p1.y - 6);
+      ctx.fillStyle = 'rgba(0,0,255,1)';
+      ctx.fillText(label, p1.x + 6, p1.y - 6);
+    }
 
     // Map coordinate conversion functions
     function lng2tileX(lng, z) {

@@ -849,12 +849,63 @@
       map.zoomTo(zoom);
     }
 
-    // Export panel open/close (state computation is added in a later step)
+    // Export panel state, open/close, bounds/z logic, date selectors, APNG preview
     const exportPanel = document.getElementById('export-panel');
     const exportParams = { z: 11, x1: 0, y1: 0, x2: 0, y2: 0, type: 'png', from: null, to: null, savedVersion: null };
+
+    const EXPORT_Z_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11];
+    const PNG_MAX_TILES = 400;
+    const APNG_MAX_TILES = 64;
+    function validExportZ() { return new Set(EXPORT_Z_OPTIONS); }
+    function defaultExportZ() {
+      const z = Math.floor(map.getZoom());
+      return validExportZ().has(z) ? z : 11;
+    }
+    function geoBoundsOfSelection() {
+      const z = exportParams.z;
+      return {
+        west: tile2lng(exportParams.x1, z),
+        east: tile2lng(exportParams.x2 + 1, z),
+        north: tile2lat(exportParams.y1, z),
+        south: tile2lat(exportParams.y2 + 1, z)
+      };
+    }
+
     function openExportPanel() {
       document.body.classList.add('export-open');
       exportPanel.classList.add('open');
+
+      const zSel = document.getElementById('export-z');
+      if (zSel.options.length === 0) {
+        EXPORT_Z_OPTIONS.forEach(z => {
+          const o = document.createElement('option');
+          o.value = z; o.textContent = `z ${z}`;
+          zSel.appendChild(o);
+        });
+      }
+
+      // Initial state: z = current map zoom, bounds = viewport tiles at that z.
+      exportParams.z = defaultExportZ();
+      zSel.value = exportParams.z;
+      const z = exportParams.z;
+      const b = map.getBounds();
+      const maxT = Math.pow(2, z) - 1;
+      let x1 = Math.min(maxT, Math.max(0, lng2tileX(b.getWest(), z)));
+      let x2 = Math.min(maxT, Math.max(0, lng2tileX(b.getEast(), z)));
+      let y1 = Math.min(maxT, Math.max(0, lat2tileY(b.getNorth(), z)));
+      let y2 = Math.min(maxT, Math.max(0, lat2tileY(b.getSouth(), z)));
+      exportParams.x1 = Math.min(x1, x2); exportParams.x2 = Math.max(x1, x2);
+      exportParams.y1 = Math.min(y1, y2); exportParams.y2 = Math.max(y1, y2);
+      document.getElementById('export-x1').value = exportParams.x1;
+      document.getElementById('export-x2').value = exportParams.x2;
+      document.getElementById('export-y1').value = exportParams.y1;
+      document.getElementById('export-y2').value = exportParams.y2;
+
+      exportParams.type = 'png';
+      exportParams.savedVersion = null;
+      document.getElementById('export-type-png').checked = true;
+      populateDateSelects();
+      recomputeExportInfo();
     }
     function closeExportPanel() {
       document.body.classList.remove('export-open');
@@ -862,6 +913,152 @@
     }
     document.getElementById('export-btn').addEventListener('click', openExportPanel);
     document.getElementById('export-close').addEventListener('click', closeExportPanel);
+
+    function populateDateSelects() {
+      const start = document.getElementById('export-start');
+      const end = document.getElementById('export-end');
+      if (start.options.length > 0) return;
+      WPLACE_VERSIONS.forEach((v) => {
+        for (const s of [start, end]) {
+          const o = document.createElement('option');
+          o.value = v.version;
+          o.textContent = v.date;
+          s.appendChild(o);
+        }
+      });
+      const curIdx = Math.max(0, WPLACE_VERSIONS.findIndex(v => v.version === wplaceVersion));
+      start.value = WPLACE_VERSIONS[curIdx].version;
+      end.value = WPLACE_VERSIONS[WPLACE_VERSIONS.length - 1].version;
+    }
+
+    function switchMapToVersion(version) {
+      if (exportParams.savedVersion === null) exportParams.savedVersion = wplaceVersion;
+      wplaceVersion = version;
+      map.setStyle(getMapStyle(version));
+      const idx = WPLACE_VERSIONS.findIndex(v => v.version === version);
+      if (idx >= 0) {
+        versionSlider.value = idx;
+        updateVersionLabel(idx);
+      }
+      try { updateUrlWithMapView(map); } catch (e) { console.error(e); }
+      map.once('styledata', drawExportOverlay);
+    }
+
+    function restoreSavedMapVersion() {
+      if (exportParams.savedVersion === null) return;
+      wplaceVersion = exportParams.savedVersion;
+      exportParams.savedVersion = null;
+      map.setStyle(getMapStyle(wplaceVersion));
+      const idx = WPLACE_VERSIONS.findIndex(v => v.version === wplaceVersion);
+      if (idx >= 0) {
+        versionSlider.value = idx;
+        updateVersionLabel(idx);
+      }
+      try { updateUrlWithMapView(map); } catch (e) { console.error(e); }
+    }
+
+    function readExportInputs() {
+      const maxT = Math.pow(2, exportParams.z) - 1;
+      function clampInt(v, lo, hi) {
+        const n = Math.floor(Number(v));
+        if (isNaN(n)) return lo;
+        return Math.min(hi, Math.max(lo, n));
+      }
+      let x1 = clampInt(document.getElementById('export-x1').value, 0, maxT);
+      let x2 = clampInt(document.getElementById('export-x2').value, 0, maxT);
+      let y1 = clampInt(document.getElementById('export-y1').value, 0, maxT);
+      let y2 = clampInt(document.getElementById('export-y2').value, 0, maxT);
+      exportParams.x1 = Math.min(x1, x2); exportParams.x2 = Math.max(x1, x2);
+      exportParams.y1 = Math.min(y1, y2); exportParams.y2 = Math.max(y1, y2);
+      document.getElementById('export-x1').value = exportParams.x1;
+      document.getElementById('export-x2').value = exportParams.x2;
+      document.getElementById('export-y1').value = exportParams.y1;
+      document.getElementById('export-y2').value = exportParams.y2;
+    }
+
+    function recomputeExportInfo() {
+      readExportInputs();
+      const w = exportParams.x2 - exportParams.x1 + 1;
+      const h = exportParams.y2 - exportParams.y1 + 1;
+      const count = w * h;
+      const info = document.getElementById('export-info');
+      info.textContent = `${w}×${h} tiles = ${count} · ${w * 1000}×${h * 1000} px`;
+      if (exportParams.type === 'apng') {
+        const sIdx = WPLACE_VERSIONS.findIndex(v => v.version === document.getElementById('export-start').value);
+        const eIdx = WPLACE_VERSIONS.findIndex(v => v.version === document.getElementById('export-end').value);
+        const frames = Math.max(0, eIdx - sIdx) + 1;
+        info.textContent += ` · ${frames} frames`;
+      }
+      const cap = exportParams.type === 'apng' ? APNG_MAX_TILES : PNG_MAX_TILES;
+      const over = count > cap;
+      const hint = document.getElementById('export-hint');
+      hint.classList.toggle('show', over);
+      hint.textContent = over
+        ? `Too large: ${count} tiles (limit ${cap}). Zoom in or reduce the range.`
+        : '';
+      document.getElementById('export-run-btn').disabled = over;
+      drawExportOverlay();
+    }
+
+    function onExportZChanged() {
+      const geo = geoBoundsOfSelection();
+      const newZ = parseInt(document.getElementById('export-z').value, 10);
+      const maxT = Math.pow(2, newZ) - 1;
+      function clampInt(v, hi) { return Math.min(hi, Math.max(0, v)); }
+      let x1 = clampInt(lng2tileX(geo.west, newZ), maxT);
+      let x2 = clampInt(lng2tileX(geo.east, newZ), maxT);
+      let y1 = clampInt(lat2tileY(geo.north, newZ), maxT);
+      let y2 = clampInt(lat2tileY(geo.south, newZ), maxT);
+      exportParams.z = newZ;
+      document.getElementById('export-x1').value = Math.min(x1, x2);
+      document.getElementById('export-x2').value = Math.max(x1, x2);
+      document.getElementById('export-y1').value = Math.min(y1, y2);
+      document.getElementById('export-y2').value = Math.max(y1, y2);
+      recomputeExportInfo();
+    }
+
+    document.querySelectorAll('input[name="export-type"]').forEach(r => {
+      r.addEventListener('change', () => {
+        exportParams.type = r.value;
+        const isApng = exportParams.type === 'apng';
+        document.getElementById('export-date-section').style.display = isApng ? '' : 'none';
+        if (isApng) {
+          switchMapToVersion(document.getElementById('export-end').value);
+          const eIdx = WPLACE_VERSIONS.findIndex(v => v.version === document.getElementById('export-end').value);
+          document.getElementById('export-last-frame').textContent =
+            `Last frame: ${WPLACE_VERSIONS[eIdx].date}`;
+        } else {
+          restoreSavedMapVersion();
+          document.getElementById('export-last-frame').textContent = '';
+        }
+        recomputeExportInfo();
+      });
+    });
+    document.getElementById('export-z').addEventListener('change', onExportZChanged);
+    ['export-x1', 'export-x2', 'export-y1', 'export-y2'].forEach(id => {
+      document.getElementById(id).addEventListener('input', recomputeExportInfo);
+    });
+    document.getElementById('export-start').addEventListener('change', () => {
+      const s = document.getElementById('export-start');
+      const e = document.getElementById('export-end');
+      const sIdx = WPLACE_VERSIONS.findIndex(v => v.version === s.value);
+      const eIdx = WPLACE_VERSIONS.findIndex(v => v.version === e.value);
+      if (sIdx > eIdx) e.value = s.value;
+      recomputeExportInfo();
+    });
+    document.getElementById('export-end').addEventListener('change', () => {
+      const s = document.getElementById('export-start');
+      const e = document.getElementById('export-end');
+      const sIdx = WPLACE_VERSIONS.findIndex(v => v.version === s.value);
+      const eIdx = WPLACE_VERSIONS.findIndex(v => v.version === e.value);
+      if (eIdx < sIdx) s.value = e.value;
+      const label = WPLACE_VERSIONS[eIdx];
+      document.getElementById('export-last-frame').textContent =
+        `Last frame: ${label.date}`;
+      if (exportParams.type === 'apng') switchMapToVersion(e.value);
+      recomputeExportInfo();
+    });
+    function drawExportOverlay() {} // real overlay added in Task 5
 
     // Map coordinate conversion functions
     function lng2tileX(lng, z) {

@@ -1036,7 +1036,7 @@
       r.addEventListener('change', () => {
         exportParams.type = r.value;
         const isApng = exportParams.type === 'apng';
-        document.getElementById('export-date-section').style.display = isApng ? '' : 'none';
+        document.getElementById('export-date-section').style.display = isApng ? 'block' : 'none';
         if (isApng) {
           switchMapToVersion(document.getElementById('export-end').value);
           const eIdx = WPLACE_VERSIONS.findIndex(v => v.version === document.getElementById('export-end').value);

@@ -904,6 +904,11 @@
       exportParams.type = 'png';
       exportParams.savedVersion = null;
       document.getElementById('export-type-png').checked = true;
+      document.getElementById('export-date-section').style.display = 'none';
+      document.getElementById('export-last-frame').textContent = '';
+      const status = document.getElementById('export-status');
+      status.textContent = '';
+      status.classList.remove('error');
       populateDateSelects();
       ensureExportOverlay();
       map.on('move', drawExportOverlay);
@@ -1272,6 +1277,9 @@
       const cap = exportParams.type === 'apng' ? APNG_MAX_TILES : PNG_MAX_TILES;
       const count = (exportParams.x2 - exportParams.x1 + 1) * (exportParams.y2 - exportParams.y1 + 1);
       if (count > cap) return;
+      const label = runBtn.textContent;
+      runBtn.disabled = true;
+      runBtn.textContent = "Exporting…";
       try {
         await initWasm();
         const z = BigInt(exportParams.z);
@@ -1281,9 +1289,6 @@
         exportParams.to = document.getElementById('export-end').value;
         const from = parseInt(exportParams.from, 10);
         const to = parseInt(exportParams.to, 10);
-        const label = runBtn.textContent;
-        runBtn.disabled = true;
-        runBtn.textContent = "Exporting…";
         try {
           if (exportParams.type === 'png') {
             const version = parseInt(wplaceVersion, 10);
@@ -1307,6 +1312,7 @@
 
     window.log_user_message = async function(message) {
       const status = document.getElementById('export-status');
+      while (status.childElementCount >= 50) status.firstElementChild.remove();
       const p = document.createElement('p');
       p.textContent = message;
       status.appendChild(p);

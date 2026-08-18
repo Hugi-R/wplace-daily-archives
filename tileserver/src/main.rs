@@ -5,7 +5,7 @@
 // - Serve the tile bodies as Bytes read directly from stmt.query_row(|r| r.get_ref(0)) to avoid one copy.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     env, fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -32,8 +32,7 @@ use tracing::{error, info, warn};
 use scheduled_thread_pool::ScheduledThreadPool;
 
 mod i18n;
-#[allow(unused_imports)] // exercised by Task 2
-use i18n::Lang;
+use i18n::{html_escape, Lang};
 
 // ---------------------------------------------------------------------------
 // Database manager
@@ -344,7 +343,7 @@ struct TileServer {
     #[allow(dead_code)]
     data_path: PathBuf,
     db: DatabaseManager,
-    index_html: Bytes,
+    index_html: BTreeMap<Lang, Bytes>,
     #[allow(dead_code)]
     latest_version: String,
     preview_image: Bytes,
@@ -359,6 +358,10 @@ impl TileServer {
 
         let dates = db.get_date_list();
         let (index_html, latest_version) = build_index(&data_path, &dates)?;
+        let index_html: BTreeMap<Lang, Bytes> = index_html
+            .into_iter()
+            .map(|(k, v)| (k, Bytes::from(v)))
+            .collect();
 
         let preview_image = match make_latest_image() {
             Ok(d) => d,
@@ -381,7 +384,7 @@ impl TileServer {
         Ok(Self {
             data_path,
             db,
-            index_html: Bytes::from(index_html),
+            index_html,
             latest_version,
             preview_image,
             favicon,
@@ -394,18 +397,91 @@ fn make_latest_image() -> Result<Bytes> {
     Err(anyhow!("TODO"))
 }
 
-/// Loads index.html.tmpl and replaces `//$$VERSION_OPTIONS$$` with the options.
-fn build_index(data_path: &Path, dates: &[u32]) -> Result<(String, String)> {
+/// Base URL used for canonical links, og:url and hreflang alternates.
+const SITE_BASE: &str = "https://wplace.eralyon.net";
+
+/// Renders the full index page for one language from the template.
+fn render_index(
+    tmpl: &str,
+    lang: Lang,
+    dict: &BTreeMap<String, String>,
+    version_options: &str,
+) -> Result<String> {
+    let mut content = tmpl.to_string();
+
+    content = content.replace("//$$VERSION_OPTIONS$$", version_options);
+    content = content.replace("{{LANG_PATH}}", lang.path());
+
+    let mut hrefs = String::new();
+    for l in Lang::ALL {
+        hrefs.push_str(&format!(
+            "    <link rel=\"alternate\" hreflang=\"{}\" href=\"{SITE_BASE}/{}/\">\n",
+            l.code(),
+            l.path()
+        ));
+    }
+    hrefs.push_str(&format!(
+        "    <link rel=\"alternate\" hreflang=\"x-default\" href=\"{SITE_BASE}/{}/\">\n",
+        Lang::En.path()
+    ));
+    content = content.replace("{{HREFLANG_LINKS}}", &hrefs);
+
+    let mut switcher = String::from("<nav class=\"lang-switcher\">\n");
+    for l in Lang::ALL {
+        let cls = if l == lang { " class=\"lang-active\"" } else { "" };
+        switcher.push_str(&format!(
+            "  <a href=\"/{}/\"{cls}>{}</a>\n",
+            l.path(),
+            l.label()
+        ));
+    }
+    switcher.push_str("</nav>");
+    content = content.replace("{{LANG_SWITCHER}}", &switcher);
+
+    let dict_json = serde_json::to_string(dict).context("serialize i18n dict")?;
+    content = content.replace("//$$I18N_DICT$$", &format!("window.I18N = {dict_json};"));
+
+    loop {
+        let Some(start) = content.find("{{t:") else { break };
+        let after = &content[start + 4..];
+        let end = after
+            .find("}}")
+            .ok_or_else(|| anyhow!("unterminated i18n placeholder at byte {start}"))?;
+        let key = &after[..end];
+        let value = dict
+            .get(key)
+            .ok_or_else(|| anyhow!("unknown i18n key '{{{{t:{key}}}}}'"))?;
+        content.replace_range(start..start + 4 + end + 2, &html_escape(value));
+    }
+
+    for marker in [
+        "{{t:",
+        "{{LANG_PATH}}",
+        "{{HREFLANG_LINKS}}",
+        "{{LANG_SWITCHER}}",
+        "//$$I18N_DICT$$",
+        "//$$VERSION_OPTIONS$$",
+    ] {
+        if content.contains(marker) {
+            return Err(anyhow!("leftover template marker {marker} in rendered page"));
+        }
+    }
+
+    Ok(content)
+}
+
+/// Loads index.html.tmpl and renders one copy per language.
+fn build_index(data_path: &Path, dates: &[u32]) -> Result<(BTreeMap<Lang, String>, String)> {
     let last = *dates
         .last()
         .ok_or_else(|| anyhow!("no versions found in the databases"))?;
     let latest_version = format!("{:.3}", last as f64);
 
     let tmpl_path = data_path.join("index.html.tmpl");
-    let content = fs::read_to_string(&tmpl_path)
+    let tmpl = fs::read_to_string(&tmpl_path)
         .with_context(|| format!("failed to read {}", tmpl_path.display()))?;
 
-    let options: Vec<String> = dates
+    let versions: Vec<String> = dates
         .iter()
         .map(|&epoch_hour| {
             format!(
@@ -414,9 +490,15 @@ fn build_index(data_path: &Path, dates: &[u32]) -> Result<(String, String)> {
             )
         })
         .collect();
+    let version_options = versions.join(",");
 
-    let content = content.replace("//$$VERSION_OPTIONS$$", &options.join(","));
-    Ok((content, latest_version))
+    let translations = i18n::load_translations(data_path)?;
+    let mut pages = BTreeMap::new();
+    for lang in Lang::ALL {
+        let page = render_index(&tmpl, lang, &translations[&lang], &version_options)?;
+        pages.insert(lang, page);
+    }
+    Ok((pages, latest_version))
 }
 
 /// Loads static assets from the assets directory.
@@ -652,7 +734,10 @@ async fn serve_all_diff(
 }
 
 async fn serve_index(State(ts): State<Arc<TileServer>>) -> Response {
-    Html(ts.index_html.clone()).into_response()
+    match ts.index_html.get(&Lang::En) {
+        Some(html) => Html(html.clone()).into_response(),
+        None => text_error(StatusCode::NOT_FOUND, "404 page not found"),
+    }
 }
 
 async fn serve_preview(State(ts): State<Arc<TileServer>>) -> Response {
@@ -909,6 +994,7 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir(tmp.path().join("assets")).unwrap();
+        write_i18n(tmp.path());
 
         let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
         let app = build_router(ts);
@@ -941,6 +1027,7 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir(tmp.path().join("assets")).unwrap();
+        write_i18n(tmp.path());
 
         let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
         let app = build_router(ts);
@@ -993,6 +1080,13 @@ mod tests {
         std::fs::write(dir.join("i18n").join("es.json"), es).unwrap();
     }
 
+    fn write_i18n(dir: &std::path::Path) {
+        std::fs::create_dir(dir.join("i18n")).unwrap();
+        for code in ["en", "ja", "es"] {
+            std::fs::write(dir.join("i18n").join(format!("{code}.json")), "{}").unwrap();
+        }
+    }
+
     #[test]
     fn load_translations_parses_all_languages() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1033,5 +1127,90 @@ mod tests {
     fn html_escape_escapes_special_chars() {
         assert_eq!(i18n::html_escape("a<b>&\"c'"), "a&lt;b&gt;&amp;&quot;c&#39;");
         assert_eq!(i18n::html_escape("plain"), "plain");
+    }
+
+    #[test]
+    fn render_index_replaces_all_placeholders() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_i18n_files(
+            tmp.path(),
+            r#"{"hello":"Hello {0}","who":"world"}"#,
+            r#"{"hello":"こんにちは {0}","who":"世界"}"#,
+            r#"{"hello":"Hola {0}","who":"mundo"}"#,
+        );
+        let dicts = i18n::load_translations(tmp.path()).unwrap();
+        let tmpl = concat!(
+            "<html lang=\"{{LANG_PATH}}\">",
+            "<title>{{t:hello}}</title>",
+            "{{HREFLANG_LINKS}}{{LANG_SWITCHER}}",
+            "<!-- //$$VERSION_OPTIONS$$ -->",
+            "<!-- //$$I18N_DICT$$ -->",
+        );
+        let page = render_index(tmpl, Lang::Ja, &dicts[&Lang::Ja], "OPTS").unwrap();
+        assert!(page.contains("<html lang=\"ja\">"), "{page}");
+        assert!(page.contains("こんにちは {0}"), "{page}");
+        assert!(page.contains("hreflang=\"en\""), "{page}");
+        assert!(page.contains("hreflang=\"ja\""), "{page}");
+        assert!(page.contains("hreflang=\"es\""), "{page}");
+        assert!(page.contains("hreflang=\"x-default\""), "{page}");
+        assert!(page.contains("href=\"/ja/\" class=\"lang-active\">日本語</a>"), "{page}");
+        assert!(page.contains("href=\"/en/\">English</a>"), "{page}");
+        assert!(page.contains("window.I18N = {"), "{page}");
+        assert!(page.contains("\"hello\":\"こんにちは {0}\""), "{page}");
+        assert!(page.contains("<!-- OPTS -->"), "{page}");
+        for marker in [
+            "{{t:",
+            "{{LANG_PATH}}",
+            "{{HREFLANG_LINKS}}",
+            "{{LANG_SWITCHER}}",
+            "//$$I18N_DICT$$",
+            "//$$VERSION_OPTIONS$$",
+        ] {
+            assert!(!page.contains(marker), "marker {marker} left over: {page}");
+        }
+    }
+
+    #[test]
+    fn render_index_errors_on_unknown_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_i18n_files(
+            tmp.path(),
+            r#"{"a":"x"}"#,
+            r#"{"a":"x"}"#,
+            r#"{"a":"x"}"#,
+        );
+        let dicts = i18n::load_translations(tmp.path()).unwrap();
+        let err = render_index("{{t:missing}}", Lang::En, &dicts[&Lang::En], "").unwrap_err();
+        assert!(err.to_string().contains("missing"), "got: {err}");
+    }
+
+    #[test]
+    fn render_index_html_escapes_injected_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_i18n_files(tmp.path(), r#"{"v":"a\"<b>&c"}"#, r#"{"v":"x"}"#, r#"{"v":"x"}"#);
+        let dicts = i18n::load_translations(tmp.path()).unwrap();
+        let page = render_index("<p>{{t:v}}</p>", Lang::En, &dicts[&Lang::En], "").unwrap();
+        assert!(page.contains("a&quot;&lt;b&gt;&amp;c"), "{page}");
+    }
+
+    #[test]
+    fn build_index_returns_all_three_languages() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("weeks")).unwrap();
+        create_week_db(&tmp.path().join("weeks"), 0, 9, 0, 0, entry(0, &[0xAA]));
+        std::fs::write(
+            tmp.path().join("index.html.tmpl"),
+            "<html lang=\"{{LANG_PATH}}\"><!-- //$$VERSION_OPTIONS$$ --></html>",
+        )
+        .unwrap();
+        std::fs::create_dir(tmp.path().join("assets")).unwrap();
+        write_i18n(tmp.path());
+        let mut mgr = DatabaseManager::new();
+        mgr.initialize_week_databases(&tmp.path().join("weeks")).unwrap();
+        let dates = mgr.get_date_list();
+        let (pages, latest) = build_index(&tmp.path(), &dates).unwrap();
+        assert_eq!(pages.len(), 3);
+        assert!(pages[&Lang::Ja].contains("<html lang=\"ja\">"));
+        assert!(!latest.is_empty());
     }
 }

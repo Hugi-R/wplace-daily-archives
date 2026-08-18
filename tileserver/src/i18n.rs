@@ -75,7 +75,6 @@ impl Lang {
 
 /// Reads `i18n/{en,ja,es}.json` under `data_path` and validates that all three
 /// files share the exact same key set.
-#[allow(dead_code)] // exercised by Task 2's tests
 pub fn load_translations(data_path: &Path) -> Result<BTreeMap<Lang, BTreeMap<String, String>>> {
     let mut maps = BTreeMap::new();
     for lang in Lang::ALL {
@@ -107,7 +106,6 @@ pub fn load_translations(data_path: &Path) -> Result<BTreeMap<Lang, BTreeMap<Str
 }
 
 /// Minimal HTML-escapes for values injected into HTML text and attributes.
-#[allow(dead_code)] // exercised by Task 2's tests
 pub fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {

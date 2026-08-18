@@ -281,6 +281,24 @@
     body.export-open .zoom-button-container,
     body.export-open #transparency-toggle,
     body.export-open #version-select { display: none !important; }
+    @media (orientation: portrait) {
+      #export-panel {
+        top: 0;
+        left: 0;
+        right: 0;
+        width: auto;
+        height: auto;
+        max-height: 65vh;
+        border-left: none;
+        border-bottom: 1px solid var(--border-color);
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+      #export-panel h2 { margin: 0 0 6px; font-size: 14px; }
+      #export-panel section { margin-bottom: 6px; }
+      #export-panel .export-bounds { grid-template-columns: repeat(4, 1fr); }
+      #export-panel .export-bounds label { font-size: 11px; margin: 2px 0; }
+    }
   </style>
 </head>
 <body>

@@ -985,4 +985,53 @@ mod tests {
         assert_eq!(Lang::from_path(""), None);
         assert_eq!(Lang::ALL.len(), 3);
     }
+
+    fn write_i18n_files(dir: &std::path::Path, en: &str, ja: &str, es: &str) {
+        std::fs::create_dir(dir.join("i18n")).unwrap();
+        std::fs::write(dir.join("i18n").join("en.json"), en).unwrap();
+        std::fs::write(dir.join("i18n").join("ja.json"), ja).unwrap();
+        std::fs::write(dir.join("i18n").join("es.json"), es).unwrap();
+    }
+
+    #[test]
+    fn load_translations_parses_all_languages() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_i18n_files(tmp.path(), r#"{"a":"1"}"#, r#"{"a":"あ"}"#, r#"{"a":"1"}"#);
+        let maps = i18n::load_translations(tmp.path()).unwrap();
+        assert_eq!(maps[&Lang::Ja]["a"], "あ");
+        assert_eq!(maps[&Lang::En]["a"], "1");
+        assert_eq!(maps.len(), 3);
+    }
+
+    #[test]
+    fn load_translations_rejects_key_missing_in_one_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_i18n_files(tmp.path(), r#"{"a":"1","b":"2"}"#, r#"{"a":"あ"}"#, r#"{"a":"1"}"#);
+        let err = i18n::load_translations(tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("b"), "got: {err}");
+        assert!(err.to_string().contains("ja"), "got: {err}");
+    }
+
+    #[test]
+    fn load_translations_rejects_extra_key_in_one_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_i18n_files(tmp.path(), r#"{"a":"1"}"#, r#"{"a":"あ","extra":"x"}"#, r#"{"a":"1"}"#);
+        assert!(i18n::load_translations(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn load_translations_missing_file_is_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("i18n")).unwrap();
+        std::fs::write(tmp.path().join("i18n").join("en.json"), r#"{"a":"1"}"#).unwrap();
+        std::fs::write(tmp.path().join("i18n").join("ja.json"), r#"{"a":"あ"}"#).unwrap();
+        // es.json absent
+        assert!(i18n::load_translations(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn html_escape_escapes_special_chars() {
+        assert_eq!(i18n::html_escape("a<b>&\"c'"), "a&lt;b&gt;&amp;&quot;c&#39;");
+        assert_eq!(i18n::html_escape("plain"), "plain");
+    }
 }

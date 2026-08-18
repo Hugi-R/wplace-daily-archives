@@ -1263,6 +1263,7 @@ mod tests {
         assert!(page.contains("hreflang=\"x-default\""), "{page}");
         assert!(page.contains("<a role=\"menuitem\" href=\"/ja/\" class=\"lang-option lang-active\">日本語</a>"), "{page}");
         assert!(page.contains("<a role=\"menuitem\" href=\"/en/\" class=\"lang-option\">English</a>"), "{page}");
+        assert!(page.contains("<a role=\"menuitem\" href=\"/es/\" class=\"lang-option\">Español</a>"), "{page}");
         assert!(page.contains("window.I18N = {"), "{page}");
         assert!(page.contains("\"hello\":\"こんにちは {0}\""), "{page}");
         assert!(page.contains("<!-- OPTS -->"), "{page}");

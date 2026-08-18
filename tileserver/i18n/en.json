@@ -52,6 +52,6 @@
   "downloading_tiles": "Downloading {0} tiles…",
   "downloading_url": "Downloading {0}",
   "download_finish": "Download finish.",
-  "creating_image": "Creating image...",
-  "creating_video": "Creating video... (freezes browser tab, be patient)"
+  "creating_image": "Creating image…",
+  "creating_video": "Creating video… (freezes browser tab, be patient)"
 }

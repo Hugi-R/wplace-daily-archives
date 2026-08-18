@@ -441,8 +441,7 @@ fn render_index(
     let dict_json = serde_json::to_string(dict).context("serialize i18n dict")?;
     content = content.replace("//$$I18N_DICT$$", &format!("window.I18N = {dict_json};"));
 
-    loop {
-        let Some(start) = content.find("{{t:") else { break };
+    while let Some(start) = content.find("{{t:") {
         let after = &content[start + 4..];
         let end = after
             .find("}}")
@@ -1208,7 +1207,7 @@ mod tests {
         let mut mgr = DatabaseManager::new();
         mgr.initialize_week_databases(&tmp.path().join("weeks")).unwrap();
         let dates = mgr.get_date_list();
-        let (pages, latest) = build_index(&tmp.path(), &dates).unwrap();
+        let (pages, latest) = build_index(tmp.path(), &dates).unwrap();
         assert_eq!(pages.len(), 3);
         assert!(pages[&Lang::Ja].contains("<html lang=\"ja\">"));
         assert!(!latest.is_empty());

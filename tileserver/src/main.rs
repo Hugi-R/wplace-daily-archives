@@ -860,6 +860,21 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    #[test]
+    fn real_translation_files_have_identical_key_sets() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let maps = i18n::load_translations(dir).expect("i18n files parse and share keys");
+        assert_eq!(maps.len(), 3);
+        for lang in Lang::ALL {
+            assert!(
+                (40..=100).contains(&maps[&lang].len()),
+                "{} has {} keys",
+                lang.code(),
+                maps[&lang].len()
+            );
+        }
+    }
+
     /// One TileHistory frame entry: [u32 LE date][u32 LE block_size][block_size payload bytes].
     fn entry(date: u32, payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();

@@ -41,6 +41,8 @@
   "encart_p5_post": ".",
   "export_z": "z {0}",
   "last_frame": "Último fotograma: {0}",
+  "export_info": "{0}×{1} teselas = {2} · {3}×{4} px",
+  "export_frames": "{0} fotogramas",
   "too_large": "Demasiado grande: {0} teselas (límite {1}). Acerca o reduce el rango.",
   "exporting": "Exportando…",
   "done": "Listo.",

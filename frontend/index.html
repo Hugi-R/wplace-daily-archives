@@ -1037,12 +1037,12 @@
       const h = exportParams.y2 - exportParams.y1 + 1;
       const count = w * h;
       const info = document.getElementById('export-info');
-      info.textContent = `${w}×${h} tiles = ${count} · ${w * 1000}×${h * 1000} px`;
+      info.textContent = t('export_info', [w, h, count, w * 1000, h * 1000]);
       if (exportParams.type === 'apng') {
         const sIdx = WPLACE_VERSIONS.findIndex(v => v.version === document.getElementById('export-start').value);
         const eIdx = WPLACE_VERSIONS.findIndex(v => v.version === document.getElementById('export-end').value);
         const frames = Math.max(0, eIdx - sIdx) + 1;
-        info.textContent += ` · ${frames} frames`;
+        info.textContent += ' · ' + t('export_frames', [frames]);
       }
       const cap = exportParams.type === 'apng' ? APNG_MAX_TILES : PNG_MAX_TILES;
       const over = count > cap;

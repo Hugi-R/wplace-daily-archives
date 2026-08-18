@@ -438,9 +438,6 @@ fn render_index(
     switcher.push_str("</nav>");
     content = content.replace("{{LANG_SWITCHER}}", &switcher);
 
-    let dict_json = serde_json::to_string(dict).context("serialize i18n dict")?;
-    content = content.replace("//$$I18N_DICT$$", &format!("window.I18N = {dict_json};"));
-
     while let Some(start) = content.find("{{t:") {
         let after = &content[start + 4..];
         let end = after
@@ -452,6 +449,9 @@ fn render_index(
             .ok_or_else(|| anyhow!("unknown i18n key '{{{{t:{key}}}}}'"))?;
         content.replace_range(start..start + 4 + end + 2, &html_escape(value));
     }
+
+    let dict_json = serde_json::to_string(dict).context("serialize i18n dict")?;
+    content = content.replace("//$$I18N_DICT$$", &format!("window.I18N = {dict_json};"));
 
     for marker in [
         "{{t:",
@@ -758,7 +758,10 @@ async fn serve_index_redirect(headers: HeaderMap) -> Response {
         .unwrap_or("")
         .to_string();
     let lang = Lang::from_accept_language(&accept);
-    redirect_found(&format!("/{}/", lang.path()))
+    let mut resp = redirect_found(&format!("/{}/", lang.path()));
+    resp.headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("accept-language"));
+    resp
 }
 
 async fn serve_lang_redirect(AxumPath(lang): AxumPath<String>) -> Response {
@@ -1266,6 +1269,12 @@ mod tests {
         let dicts = i18n::load_translations(tmp.path()).unwrap();
         let err = render_index("{{t:missing}}", Lang::En, &dicts[&Lang::En], "").unwrap_err();
         assert!(err.to_string().contains("missing"), "got: {err}");
+    }
+
+    #[test]
+    fn render_index_errors_on_unterminated_placeholder() {
+        let err = render_index("...{{t:oops", Lang::En, &BTreeMap::new(), "").unwrap_err();
+        assert!(err.to_string().contains("unterminated"), "got: {err}");
     }
 
     #[test]

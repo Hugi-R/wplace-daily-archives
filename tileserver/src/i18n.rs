@@ -44,14 +44,14 @@ impl Lang {
     /// none supported -> En.
     pub fn from_accept_language(header: &str) -> Lang {
         for tag in header.split(',') {
-            let subtag = tag.split(';').next().unwrap_or("").trim();
+            let subtag = tag.split(';').next().unwrap_or_default().trim();
             if subtag.is_empty() || subtag == "*" {
                 continue;
             }
             let primary = subtag
                 .split(['-', '_'])
                 .next()
-                .unwrap_or("")
+                .unwrap_or_default()
                 .to_ascii_lowercase();
             match primary.as_str() {
                 "ja" => return Lang::Ja,

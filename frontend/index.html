@@ -1,20 +1,21 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{LANG_PATH}}">
 <head>
   <meta charset="utf-8">
-  <title>Wplace Daily Archives</title>
+  <title>{{t:meta_title}}</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
-  <link rel="canonical" href="https://wplace.eralyon.net/">
-  <meta name="description" content="Daily archives of Wplace. Explore Wplace map starting from August 2025, and at any zoom level.">
-  <meta name="keywords" content="wplace, archives, world map, zoom, back in time, download, overlay">
-  <meta property="og:title" content="Wplace Daily Archives">
-  <meta property="og:description" content="Daily archives of Wplace. Explore Wplace map starting from august 2025, and at any zoom level.">
+  <link rel="canonical" href="https://wplace.eralyon.net/{{LANG_PATH}}/">
+  {{HREFLANG_LINKS}}
+  <meta name="description" content="{{t:meta_description}}">
+  <meta name="keywords" content="{{t:meta_keywords}}">
+  <meta property="og:title" content="{{t:meta_title}}">
+  <meta property="og:description" content="{{t:meta_description}}">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://wplace.eralyon.net/">
+  <meta property="og:url" content="https://wplace.eralyon.net/{{LANG_PATH}}/">
   <meta property="og:image" content="/preview.png">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Wplace Daily Archives">
-  <meta name="twitter:description" content="Daily archives of Wplace. Explore Wplace map starting from august 2025, and at any zoom level.">
+  <meta name="twitter:title" content="{{t:meta_title}}">
+  <meta name="twitter:description" content="{{t:meta_description}}">
   <meta name="twitter:image" content="/preview.png">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css" rel="stylesheet" />
@@ -221,6 +222,16 @@
         display: none !important;
       }
     }
+    .lang-switcher {
+      margin-left: auto;
+      display: flex;
+      gap: 10px;
+      font-size: 15px;
+      white-space: nowrap;
+    }
+    .lang-switcher a { text-decoration: none; }
+    .lang-switcher a:hover { text-decoration: underline; }
+    .lang-switcher a.lang-active { font-weight: bold; text-decoration: underline; }
     #context-menu {
       position: absolute; /* positioning is controlled from JS */
       display: none;
@@ -306,38 +317,39 @@
     <div id="map"></div>
   </main>
   <div id="version-select">
-    <label id="version-label" for="wplace-version-slider">Version:</label>
+    <label id="version-label" for="wplace-version-slider">{{t:version}}</label>
     <input type="range" id="wplace-version-slider" min="0" max="0" value="0" step="1" class="version-slider" list="wplace-version-ticks">
     <span id="wplace-version-label" style="width: 14ch;"></span>
+    {{LANG_SWITCHER}}
   </div>
   <div id="extra">
     <datalist id="wplace-version-ticks"></datalist>
     <div id="coord-input">
       <form id="goto-coord-form" style="display:flex;gap:6px;align-items:center;">
-        <label for="coord-zoom" style="font-size:15px;">Zoom:</label>
-        <input id="coord-zoom" type="number" step="any" style="width:60px;font-size:15px;" placeholder="Zoom" required>
-        <label for="coord-lat" style="font-size:15px;">Lat:</label>
-        <input id="coord-lat" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lat" required>
-        <label for="coord-lng" style="font-size:15px;">Lng:</label>
-        <input id="coord-lng" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lng" required>
-        <button type="submit" style="font-size:15px;">Go</button>
+        <label for="coord-zoom" style="font-size:15px;">{{t:zoom}}</label>
+        <input id="coord-zoom" type="number" step="any" style="width:60px;font-size:15px;" placeholder="{{t:zoom_ph}}" required>
+        <label for="coord-lat" style="font-size:15px;">{{t:lat}}</label>
+        <input id="coord-lat" type="number" step="any" style="width:80px;font-size:15px;" placeholder="{{t:lat_ph}}" required>
+        <label for="coord-lng" style="font-size:15px;">{{t:lng}}</label>
+        <input id="coord-lng" type="number" step="any" style="width:80px;font-size:15px;" placeholder="{{t:lng_ph}}" required>
+        <button type="submit" style="font-size:15px;">{{t:go}}</button>
       </form>
     </div>
     <div id="overlay-toggle">
-      <label><input type="checkbox" id="toggle-tile-overlay"> Show tile overlay</label>
+      <label><input type="checkbox" id="toggle-tile-overlay"> {{t:show_tile_overlay}}</label>
     </div>
     <div id="encart">
-      <button id="encart-close" aria-label="Close encart" title="Close encart">&times;</button>
+      <button id="encart-close" aria-label="{{t:close_encart}}" title="{{t:close_encart}}">&times;</button>
       <div id="encart-content">
-        <p>Explore Wplace world map archives at any zoom level, starting from August 2025.</p>
-        <p>Right-click the map for more tools</p>
-        <p>Each zoom level halves the image resolution. The pixel is chosen by majority. Deleted pixels can linger up to a week.</p>
-        <p>Data kindly provided by <a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>.</p>
-        <p>Report bugs on <a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a> or to <a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>.</p>
+        <p>{{t:encart_p1}}</p>
+        <p>{{t:encart_p2}}</p>
+        <p>{{t:encart_p3}}</p>
+        <p>{{t:encart_p4_pre}}<a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>{{t:encart_p4_post}}</p>
+        <p>{{t:encart_p5_pre}}<a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a>{{t:encart_p5_mid}}<a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>{{t:encart_p5_post}}</p>
       </div>
     </div>
     <div id="export-wrap">
-      <button id="export-btn" title="Export the current map area">Export</button>
+      <button id="export-btn" title="{{t:export_btn_title}}">{{t:export}}</button>
     </div>
     <div id="stats" style="z-index: 3; max-width: 300px; background: var(--panel-bg); padding: 10px; border-radius: 4px; box-shadow: var(--shadow-lg); font-size: 14px;">
       <p>Decompress: <span id="decompress-stats">NA</span></p>
@@ -346,29 +358,29 @@
     </div>
   </div>
   <div id="export-panel">
-    <button id="export-close" aria-label="Close export panel" title="Close">&times;</button>
-    <h2>Export</h2>
+    <button id="export-close" aria-label="{{t:close_export_panel}}" title="{{t:close}}">&times;</button>
+    <h2>{{t:export}}</h2>
     <section>
-      <label><input type="radio" name="export-type" id="export-type-png" value="png" checked> Static PNG</label>
-      <label><input type="radio" name="export-type" id="export-type-apng" value="apng"> Animated PNG</label>
+      <label><input type="radio" name="export-type" id="export-type-png" value="png" checked> {{t:static_png}}</label>
+      <label><input type="radio" name="export-type" id="export-type-apng" value="apng"> {{t:animated_png}}</label>
     </section>
     <section>
-      <label for="export-z">Target z level</label>
+      <label for="export-z">{{t:target_z}}</label>
       <select id="export-z"></select>
     </section>
     <section>
-      <label>Tile bounds</label>
+      <label>{{t:tile_bounds}}</label>
       <div class="export-bounds">
-        <label>Min X <input type="number" id="export-x1" step="1"></label>
-        <label>Max X <input type="number" id="export-x2" step="1"></label>
-        <label>Min Y <input type="number" id="export-y1" step="1"></label>
-        <label>Max Y <input type="number" id="export-y2" step="1"></label>
+        <label>{{t:min_x}} <input type="number" id="export-x1" step="1"></label>
+        <label>{{t:max_x}} <input type="number" id="export-x2" step="1"></label>
+        <label>{{t:min_y}} <input type="number" id="export-y1" step="1"></label>
+        <label>{{t:max_y}} <input type="number" id="export-y2" step="1"></label>
       </div>
     </section>
     <section id="export-date-section">
-      <label for="export-start">Start date</label>
+      <label for="export-start">{{t:start_date}}</label>
       <select id="export-start"></select>
-      <label for="export-end">End date</label>
+      <label for="export-end">{{t:end_date}}</label>
       <select id="export-end"></select>
       <div id="export-last-frame"></div>
     </section>
@@ -376,23 +388,23 @@
       <div id="export-info">&nbsp;</div>
       <div id="export-hint"></div>
       <div id="export-status"></div>
-      <button id="export-run-btn" disabled>Export</button>
+      <button id="export-run-btn" disabled>{{t:export}}</button>
     </section>
   </div>
   <div class="zoom-button-container">
-    <button class="zoom-button" title="Zoom In" onclick="zoomIn()">
+    <button class="zoom-button" title="{{t:zoom_in}}" onclick="zoomIn()">
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" width="22px" height="22px" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
         <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
       </svg>
     </button>
-    <button class="zoom-button" title="Zoom Out" onclick="zoomOut()">
+    <button class="zoom-button" title="{{t:zoom_out}}" onclick="zoomOut()">
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
         <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" />
       </svg>
     </button>
   </div>
   <div id="transparency-toggle" style="position: absolute; bottom: 10px; left: 10px; z-index: 3;">
-  <button id="toggle-transparency" title="Toggle art opacity" style="padding: 6px; font-size: 0px;">
+  <button id="toggle-transparency" title="{{t:toggle_art_opacity}}" style="padding: 6px; font-size: 0px;">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="22" height="22" fill="currentColor">
         <path d="M440-440v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm160 0v-80h80v80h-80Zm80-80v-80h80v80h-80Zm-320 0v-80h80v80h-80Zm-80 320q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm80-80h80v-80h-80v80Zm160 0h80v-80h-80v80Zm320 0v-80 80Zm-560-80h80v-80h80v80h80v-80h80v80h80v-80h80v80h80v-80h-80v-80h80v-320H200v320h80v80h-80v80Zm0 80v-560 560Zm560-240v80-80ZM600-280v80h80v-80h-80Z"></path>
       </svg>
@@ -770,8 +782,8 @@
     menu.style.display = 'none';
     menu.style.zIndex = '10';
     menu.innerHTML = `
-      <div id="download-tile">Download tile</div>
-      <div id="go-wplace-live">Go wplace.live</div>
+      <div id="download-tile">{{t:download_tile}}</div>
+      <div id="go-wplace-live">{{t:go_wplace_live}}</div>
     `;
     document.body.appendChild(menu);
 
@@ -816,7 +828,7 @@
       const { z, x, y } = lastTileCoords;
       
       if (typeof caches === 'undefined') {
-        alert('Caching is not supported in this browser. Downloading tiles not available.');
+        alert('{{t:cache_unsupported}}');
         return;
       }
 
@@ -836,7 +848,7 @@
         URL.revokeObjectURL(url);
         menu.style.display = 'none';    
       } else {
-        alert('Tile not found in cache. Maybe the tile is empty?');
+        alert('{{t:tile_not_in_cache}}');
       }
     });
 
@@ -1030,7 +1042,7 @@
       const hint = document.getElementById('export-hint');
       hint.classList.toggle('show', over);
       hint.textContent = over
-        ? `Too large: ${count} tiles (limit ${cap}). Zoom in or reduce the range.`
+        ? `{{t:too_large}}`
         : '';
       document.getElementById('export-run-btn').disabled = over;
       drawExportOverlay();
@@ -1300,7 +1312,7 @@
       if (count > cap) return;
       const label = runBtn.textContent;
       runBtn.disabled = true;
-      runBtn.textContent = "Exporting…";
+      runBtn.textContent = "{{t:exporting}}";
       try {
         await initWasm();
         const z = BigInt(exportParams.z);
@@ -1319,14 +1331,14 @@
             const data = await wasmModule.wasm_video("diff", z, x1, y1, x2, y2, from, to);
             saveFile(`w${from}-${to}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
           }
-          status.textContent = "Done.";
+          status.textContent = "{{t:done}}";
         } finally {
           runBtn.textContent = label;
           recomputeExportInfo(); // re-sets #export-run-btn.disabled from the current caps
         }
       } catch (e) {
         status.classList.add('error');
-        status.textContent = `Export failed: ${e}`;
+        status.textContent = `{{t:export_failed}}`;
         console.error(e);
       }
     });

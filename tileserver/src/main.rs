@@ -732,11 +732,50 @@ async fn serve_all_diff(
     }
 }
 
-async fn serve_index(State(ts): State<Arc<TileServer>>) -> Response {
-    match ts.index_html.get(&Lang::En) {
+async fn serve_index_en(State(ts): State<Arc<TileServer>>) -> Response {
+    serve_index_lang(ts, Lang::En)
+}
+
+async fn serve_index_ja(State(ts): State<Arc<TileServer>>) -> Response {
+    serve_index_lang(ts, Lang::Ja)
+}
+
+async fn serve_index_es(State(ts): State<Arc<TileServer>>) -> Response {
+    serve_index_lang(ts, Lang::Es)
+}
+
+fn serve_index_lang(ts: Arc<TileServer>, lang: Lang) -> Response {
+    match ts.index_html.get(&lang) {
         Some(html) => Html(html.clone()).into_response(),
         None => text_error(StatusCode::NOT_FOUND, "404 page not found"),
     }
+}
+
+async fn serve_index_redirect(headers: HeaderMap) -> Response {
+    let accept = headers
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let lang = Lang::from_accept_language(&accept);
+    redirect_found(&format!("/{}/", lang.path()))
+}
+
+async fn serve_lang_redirect(AxumPath(lang): AxumPath<String>) -> Response {
+    match Lang::from_path(&lang) {
+        Some(l) => redirect_found(&format!("/{}/", l.path())),
+        None => text_error(StatusCode::NOT_FOUND, "404 page not found"),
+    }
+}
+
+/// 302 Found: temporary redirect with an empty body.
+fn redirect_found(path: &str) -> Response {
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, HeaderValue::from_str(path).unwrap())],
+        (),
+    )
+        .into_response()
 }
 
 async fn serve_preview(State(ts): State<Arc<TileServer>>) -> Response {
@@ -804,7 +843,11 @@ fn build_router(tile_server: Arc<TileServer>) -> Router {
     Router::new()
         .route("/tiles/{version}/{z}/{x}/{y}", get(serve_tile))
         .route("/diff/all/{z}/{x}/{y}", get(serve_all_diff))
-        .route("/", get(serve_index))
+        .route("/", get(serve_index_redirect))
+        .route("/en/", get(serve_index_en))
+        .route("/ja/", get(serve_index_ja))
+        .route("/es/", get(serve_index_es))
+        .route("/{lang}", get(serve_lang_redirect))
         .route("/preview.png", get(serve_preview))
         .route("/favicon.ico", get(serve_favicon))
         .route("/assets/{filename}", get(serve_asset))
@@ -1226,5 +1269,114 @@ mod tests {
         assert_eq!(pages.len(), 3);
         assert!(pages[&Lang::Ja].contains("<html lang=\"ja\">"));
         assert!(!latest.is_empty());
+    }
+
+    fn router_fixture() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        create_week_db(&tmp.path().join("weeks"), 0, 9, 0, 0, entry(0, &[0xAA]));
+        std::fs::write(
+            tmp.path().join("index.html.tmpl"),
+            "<html lang=\"en\" data-path=\"{{LANG_PATH}}\">{{HREFLANG_LINKS}}{{LANG_SWITCHER}}<!-- //$$VERSION_OPTIONS$$ --></html>",
+        )
+        .unwrap();
+        std::fs::create_dir(tmp.path().join("assets")).unwrap();
+        write_i18n(tmp.path());
+        tmp
+    }
+
+    #[tokio::test]
+    async fn index_root_redirects_by_accept_language() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        for (header, expected) in [
+            ("en-US,en;q=0.9", "/en/"),
+            ("ja-JP,ja;q=0.9,en;q=0.8", "/ja/"),
+            ("es-ES,es;q=0.9", "/es/"),
+            ("fr-FR", "/en/"),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/")
+                        .header("accept-language", header)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::FOUND);
+            assert_eq!(resp.headers().get("location").unwrap(), expected);
+        }
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers().get("location").unwrap(), "/en/");
+    }
+
+    #[tokio::test]
+    async fn lang_path_serves_localized_page() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ja/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = String::from_utf8(to_bytes(resp.into_body(), 64 * 1024).await.unwrap().to_vec())
+            .unwrap();
+        assert!(body.contains("data-path=\"ja\""), "{body}");
+        assert!(body.contains("hreflang=\"x-default\""), "{body}");
+        assert!(
+            body.contains("href=\"/ja/\" class=\"lang-active\">日本語</a>"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn lang_without_trailing_slash_redirects() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/en")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers().get("location").unwrap(), "/en/");
+    }
+
+    #[tokio::test]
+    async fn unknown_lang_path_is_404() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        for uri in ["/fr/", "/fr"] {
+            let resp = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
     }
 }

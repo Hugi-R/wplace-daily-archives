@@ -966,6 +966,16 @@ mod tests {
                 "{:?}\n{page}",
                 lang
             );
+            assert!(
+                page.contains("wasm_screenshot(\"/tiles\","),
+                "{:?}: screenshot base_url must be absolute\n{page}",
+                lang
+            );
+            assert!(
+                page.contains("wasm_video(\"/diff\","),
+                "{:?}: video base_url must be absolute\n{page}",
+                lang
+            );
         }
     }
 

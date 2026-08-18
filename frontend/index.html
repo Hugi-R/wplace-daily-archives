@@ -1381,10 +1381,10 @@
         try {
           if (exportParams.type === 'png') {
             const version = parseInt(wplaceVersion, 10);
-            const data = await wasmModule.wasm_screenshot("tiles", z, version, x1, y1, x2, y2);
+            const data = await wasmModule.wasm_screenshot("/tiles", z, version, x1, y1, x2, y2);
             saveFile(`w${version}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
           } else {
-            const data = await wasmModule.wasm_video("diff", z, x1, y1, x2, y2, from, to);
+            const data = await wasmModule.wasm_video("/diff", z, x1, y1, x2, y2, from, to);
             saveFile(`w${from}-${to}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
           }
           status.textContent = t('done');

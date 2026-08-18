@@ -222,16 +222,48 @@
         display: none !important;
       }
     }
-    .lang-switcher {
-      margin-left: auto;
-      display: flex;
-      gap: 10px;
-      font-size: 15px;
-      white-space: nowrap;
+    .lang-switcher { margin-left: auto; position: relative; }
+    .lang-switcher summary {
+      list-style: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: var(--panel-bg-weak);
+      color: var(--button-text);
     }
-    .lang-switcher a { text-decoration: none; }
-    .lang-switcher a:hover { text-decoration: underline; }
-    .lang-switcher a.lang-active { font-weight: bold; text-decoration: underline; }
+    .lang-switcher summary::-webkit-details-marker { display: none; }
+    .lang-switcher .lang-icon { width: 22px; height: 22px; }
+    .lang-menu {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      margin: 0;
+      padding: 6px 0;
+      list-style: none;
+      background: var(--panel-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      box-shadow: var(--shadow-lg);
+      min-width: 150px;
+      font-size: 15px;
+      z-index: 110;
+    }
+    .lang-menu a {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 16px;
+      text-decoration: none;
+      color: var(--button-text);
+    }
+    .lang-menu a:hover { background: var(--panel-bg-weak); }
+    .lang-menu a.lang-active { font-weight: 600; }
+    .lang-menu a.lang-active::after { content: "✓"; font-weight: 600; }
     #context-menu {
       position: absolute; /* positioning is controlled from JS */
       display: none;
@@ -539,6 +571,23 @@
         encartClose.onclick = function() {
           encart.style.display = 'none';
         };
+      }
+    });
+
+    // --- Language switcher dropdown ---
+    document.addEventListener('DOMContentLoaded', function() {
+      var langSwitcher = document.getElementById('lang-switcher');
+      var langSummary = langSwitcher ? langSwitcher.querySelector('summary') : null;
+      if (langSwitcher) {
+        document.addEventListener('click', function(e) {
+          if (!langSwitcher.contains(e.target)) langSwitcher.open = false;
+        });
+        document.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape' && langSwitcher.open) {
+            langSwitcher.open = false;
+            if (langSummary) langSummary.focus();
+          }
+        });
       }
     });
 

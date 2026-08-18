@@ -426,16 +426,25 @@ fn render_index(
     ));
     content = content.replace("{{HREFLANG_LINKS}}", &hrefs);
 
-    let mut switcher = String::from("<nav class=\"lang-switcher\">\n");
+    let mut switcher = String::from(
+        "<details class=\"lang-switcher\" id=\"lang-switcher\">\n\
+         <summary aria-haspopup=\"menu\">\n\
+         <svg class=\"lang-icon\" viewBox=\"0 0 24 24\" fill=\"none\" aria-hidden=\"true\">\n\
+         <text x=\"3\" y=\"17\" font-family=\"sans-serif\" font-size=\"12\" font-weight=\"600\" fill=\"currentColor\">A</text>\n\
+         <text x=\"12\" y=\"17\" font-family=\"sans-serif\" font-size=\"12\" font-weight=\"600\" fill=\"currentColor\">あ</text>\n\
+         </svg>\n\
+         </summary>\n\
+         <ul role=\"menu\" class=\"lang-menu\">\n",
+    );
     for l in Lang::ALL {
-        let cls = if l == lang { " class=\"lang-active\"" } else { "" };
+        let cls = if l == lang { " lang-active" } else { "" };
         switcher.push_str(&format!(
-            "  <a href=\"/{}/\"{cls}>{}</a>\n",
+            "  <li><a role=\"menuitem\" href=\"/{}/\" class=\"lang-option{cls}\">{}</a></li>\n",
             l.path(),
             l.label()
         ));
     }
-    switcher.push_str("</nav>");
+    switcher.push_str("</ul>\n</details>");
     content = content.replace("{{LANG_SWITCHER}}", &switcher);
 
     while let Some(start) = content.find("{{t:") {
@@ -1252,8 +1261,8 @@ mod tests {
         assert!(page.contains("hreflang=\"ja\""), "{page}");
         assert!(page.contains("hreflang=\"es\""), "{page}");
         assert!(page.contains("hreflang=\"x-default\""), "{page}");
-        assert!(page.contains("href=\"/ja/\" class=\"lang-active\">日本語</a>"), "{page}");
-        assert!(page.contains("href=\"/en/\">English</a>"), "{page}");
+        assert!(page.contains("<a role=\"menuitem\" href=\"/ja/\" class=\"lang-option lang-active\">日本語</a>"), "{page}");
+        assert!(page.contains("<a role=\"menuitem\" href=\"/en/\" class=\"lang-option\">English</a>"), "{page}");
         assert!(page.contains("window.I18N = {"), "{page}");
         assert!(page.contains("\"hello\":\"こんにちは {0}\""), "{page}");
         assert!(page.contains("<!-- OPTS -->"), "{page}");
@@ -1390,9 +1399,14 @@ mod tests {
         assert!(body.contains("data-path=\"ja\""), "{body}");
         assert!(body.contains("hreflang=\"x-default\""), "{body}");
         assert!(
-            body.contains("href=\"/ja/\" class=\"lang-active\">日本語</a>"),
+            body.contains("<a role=\"menuitem\" href=\"/ja/\" class=\"lang-option lang-active\">日本語</a>"),
             "{body}"
         );
+        assert!(
+            body.contains("<details class=\"lang-switcher\" id=\"lang-switcher\">"),
+            "{body}"
+        );
+        assert!(body.contains("aria-haspopup=\"menu\""), "{body}");
     }
 
     #[tokio::test]

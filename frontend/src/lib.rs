@@ -36,7 +36,7 @@ extern "C" {
     fn log(s: &str);
 
     #[wasm_bindgen]
-    async fn log_user_message(s: &str);
+    async fn log_user_message(key: &str, args: Vec<String>);
 }
 
 macro_rules! console_log {
@@ -62,12 +62,12 @@ pub async fn wasm_screenshot(base_url: &str, z: i64, version: u32, x1: i64, y1: 
     let window = web_sys::window().unwrap();
 
     let total_tiles = (x2-x1+1) * (y2-y1+1);
-    log_user_message(format!("Downloading {} tiles...", total_tiles).as_str()).await;
+    log_user_message("downloading_tiles", vec![total_tiles.to_string()]).await;
 
     for y in y1..(y2+1) {
         for x in x1..(x2+1) {
             let url = format!("{}/{}/{}/{}/{}.zst", base_url, version.week(), z, x, y);
-            log_user_message(format!("Downloading {}", url).as_str()).await;
+            log_user_message("downloading_url", vec![url.clone()]).await;
             let request = Request::new_with_str_and_init(&url, &opts)?;
             let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
             assert!(resp_value.is_instance_of::<Response>());
@@ -102,10 +102,10 @@ pub async fn wasm_screenshot(base_url: &str, z: i64, version: u32, x1: i64, y1: 
     }
 
 
-    log_user_message("Download finish.").await;
-    log_user_message("Creating image...").await;
+    log_user_message("download_finish", vec![]).await;
+    log_user_message("creating_image", vec![]).await;
     let png = target.to_png().map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
-    log_user_message("Done.").await;
+    log_user_message("done", vec![]).await;
     Ok(png)
 }
 
@@ -120,13 +120,13 @@ pub async fn wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i
     let window = web_sys::window().unwrap();
 
     let total_tiles = (x2-x1+1) * (y2-y1+1);
-    log_user_message(format!("Downloading {} tiles...", total_tiles).as_str()).await;
+    log_user_message("downloading_tiles", vec![total_tiles.to_string()]).await;
 
     let mut history:HashMap<(u16, u16), TileHistory> = HashMap::new();
     for y in y1..(y2+1) {
         for x in x1..(x2+1) {
             let url = format!("{}/all/{}/{}/{}.zst?from={}&to={}", base_url, z, x, y, from, to);
-            log_user_message(format!("Downloading {}", url).as_str()).await;
+            log_user_message("downloading_url", vec![url.clone()]).await;
             let request = Request::new_with_str_and_init(&url, &opts)?;
             let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
             assert!(resp_value.is_instance_of::<Response>());
@@ -150,11 +150,11 @@ pub async fn wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i
         }
     }
 
-    log_user_message("Download finish.").await;
-    log_user_message("Creating video... (freezes browser tab, be patient)").await;
+    log_user_message("download_finish", vec![]).await;
+    log_user_message("creating_video", vec![]).await;
     let png = tilehistory::apng_from_history(history, 200)
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to create APNG: {}", e)))?;
-    log_user_message("Done.").await;
+    log_user_message("done", vec![]).await;
     Ok(png)
 }
 

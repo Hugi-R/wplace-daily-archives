@@ -31,6 +31,10 @@ use tower_http::timeout::TimeoutLayer;
 use tracing::{error, info, warn};
 use scheduled_thread_pool::ScheduledThreadPool;
 
+mod i18n;
+#[allow(unused_imports)] // exercised by Task 2
+use i18n::Lang;
+
 // ---------------------------------------------------------------------------
 // Database manager
 // ---------------------------------------------------------------------------
@@ -951,5 +955,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn accept_language_picks_first_supported_tag() {
+        assert_eq!(Lang::from_accept_language("en-US,en;q=0.9"), Lang::En);
+        assert_eq!(Lang::from_accept_language("ja-JP,ja;q=0.9,en;q=0.8"), Lang::Ja);
+        assert_eq!(Lang::from_accept_language("es-ES,es;q=0.9"), Lang::Es);
+        // unsupported first tag is skipped; the first supported one wins
+        assert_eq!(Lang::from_accept_language("fr-FR,ja;q=0.8,en;q=0.7"), Lang::Ja);
+        // none supported -> default English; empty / wildcard also default
+        assert_eq!(Lang::from_accept_language("fr-FR"), Lang::En);
+        assert_eq!(Lang::from_accept_language(""), Lang::En);
+        assert_eq!(Lang::from_accept_language("*"), Lang::En);
+    }
+
+    #[test]
+    fn lang_code_path_label_and_path_lookup() {
+        assert_eq!(Lang::En.code(), "en");
+        assert_eq!(Lang::En.path(), "en");
+        assert_eq!(Lang::En.label(), "English");
+        assert_eq!(Lang::Ja.code(), "ja");
+        assert_eq!(Lang::Ja.label(), "日本語");
+        assert_eq!(Lang::Es.code(), "es");
+        assert_eq!(Lang::Es.label(), "Español");
+        assert_eq!(Lang::from_path("es"), Some(Lang::Es));
+        assert_eq!(Lang::from_path("ja"), Some(Lang::Ja));
+        assert_eq!(Lang::from_path("fr"), None);
+        assert_eq!(Lang::from_path(""), None);
+        assert_eq!(Lang::ALL.len(), 3);
     }
 }

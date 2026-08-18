@@ -945,6 +945,11 @@ mod tests {
                 lang
             );
             assert!(page.contains("window.I18N = {"), "{:?}\n{page}", lang);
+            assert!(
+                page.contains("new Worker('/assets/tile-worker.js')"),
+                "{:?}\n{page}",
+                lang
+            );
         }
     }
 

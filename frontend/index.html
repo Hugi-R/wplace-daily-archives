@@ -459,7 +459,7 @@
 
         // Create worker pool
         for (let i = 0; i < numWorkers; i++) {
-          const worker = new Worker('assets/tile-worker.js');
+          const worker = new Worker('/assets/tile-worker.js');
           worker.ready = false;
           worker.busy = false;
           worker.onmessage = (e) => this.handleWorkerMessage(worker, e);

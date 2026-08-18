@@ -227,22 +227,64 @@ impl DatabaseManager {
                 }
             };
 
-            // Skip the part with DateHours == 0 (except on the first iteration).
-            let mut skip = 0usize;
-            if !is_first && diff_data.len() > 8 {
-                let date_hours = u32::from_le_bytes(diff_data[0..4].try_into().unwrap());
-                if date_hours == 0 {
-                    let length = u32::from_le_bytes(diff_data[4..8].try_into().unwrap()) as usize;
-                    // clamp: Go would panic on an out-of-range slice
-                    skip = (8 + length).min(diff_data.len());
-                }
+            // The `dh == 0` full base of the first-week blob is kept as-is so the
+            // concatenated stream always starts from a clean full frame. For any
+            // other week, the base is only redundant when the week was seeded from
+            // the immediately-previous week's tail. When a week was snapshotted via
+            // makebase (fresh state) or an earlier week is missing, skipping it
+            // severs the diff chain and the APNG accumulates onto a stale canvas.
+            // Keep it, renamed to the week boundary so it lands in the date-ordered
+            // stream as a unique full-frame reset.
+            if is_first {
+                out.extend_from_slice(&diff_data);
+            } else {
+                let mut body = diff_data;
+                let boundary = version * (24 * 7);
+                self.reseat_week_base(&mut body, boundary);
+                out.extend_from_slice(&body);
             }
-
-            out.extend_from_slice(&diff_data[skip..]);
             is_first = false;
         }
 
         out
+    }
+
+    /// If `data` starts with a `dh == 0` full base, rewrite its date to the week
+    /// `boundary` instead of dropping it (see `get_all_diffs`). Any later entry in
+    /// the same blob already at `boundary` encodes the same state as the base and
+    /// is removed, so the rewritten base remains the single boundary frame.
+    fn reseat_week_base(&self, data: &mut Vec<u8>, boundary: u32) {
+        if boundary == 0 || data.len() < 8 {
+            return;
+        }
+        let first_date = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        if first_date != 0 {
+            return;
+        }
+
+        let mut offset = 0usize;
+        let mut first_entry = true;
+        let mut out = Vec::with_capacity(data.len());
+        while offset + 8 <= data.len() {
+            let date = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+            let length = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            let entry_end = offset + 8 + length;
+            if entry_end > data.len() {
+                break; // tolerate trailing garbage, mirroring from_bytes
+            }
+            if first_entry {
+                first_entry = false;
+                out.extend_from_slice(&boundary.to_le_bytes());
+                out.extend_from_slice(&data[offset + 4..entry_end]);
+            } else if date == boundary {
+                // Redundant diff colliding with the renamed base: drop it.
+            } else {
+                out.extend_from_slice(&data[offset..entry_end]);
+            }
+            offset = entry_end;
+        }
+
+        *data = out;
     }
 }
 
@@ -760,7 +802,8 @@ mod tests {
     }
 
     fn rich_week1_blob() -> Vec<u8> {
-        let mut b = entry(0, &[0xCC, 0xDD]); // full-image header in this week (skipped by concat logic)
+        // full-image header at dh==0 in this week, renamed to the week boundary (168) by concat logic
+        let mut b = entry(0, &[0xCC, 0xDD]);
         b.extend(entry(7, &[0xEE])); // the actual change
         b
     }
@@ -771,6 +814,7 @@ mod tests {
         let w1 = rich_week1_blob();
         let expect = {
             let mut e = base.clone();
+            e.extend(entry(168, &[0xCC, 0xDD])); // week-1 dh==0 base kept, renamed to boundary
             e.extend(entry(7, &[0xEE]));
             e
         };
@@ -789,6 +833,62 @@ mod tests {
                 "z={z} concatenation mismatch"
             );
         }
+    }
+
+    #[test]
+    fn get_all_diffs_keeps_base_of_noncontiguous_week_at_boundary() {
+        // Weeks 0 and 2 are present; week 1 is missing (a gap). The `dh==0` base
+        // of week 2 is a fresh snapshot, not implied by the previous week's
+        // tail, so it must be KEPT in the stream -- renamed to the week
+        // boundary (2*168 = 336) -- rather than skipped.
+        let mut w0 = entry(0, &[0xAA, 0xBB]);
+        w0.extend(entry(5, &[0xCC]));
+        let mut w2 = entry(0, &[0x11, 0x22]); // dh==0 base
+        w2.extend(entry(343, &[0x33]));
+
+        let expect = {
+            let mut e = w0.clone();
+            e.extend(entry(336, &[0x11, 0x22])); // renamed base kept as a full frame
+            e.extend(entry(343, &[0x33]));
+            e
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        create_week_db(tmp.path(), 0, 9, 0, 0, w0.clone());
+        create_week_db(tmp.path(), 2, 9, 0, 0, w2.clone());
+
+        let mut mgr = DatabaseManager::new();
+        mgr.initialize_week_databases(tmp.path()).unwrap();
+
+        assert_eq!(mgr.get_all_diffs(9, 0, 0, 0, u32::MAX), expect);
+    }
+
+    #[test]
+    fn get_all_diffs_drops_diff_colliding_with_renamed_base() {
+        // Unusual week: dh==0 base AND a diff stored at exactly the week boundary
+        // (2*168 = 336). The renamed base must win; the colliding diff encodes the
+        // same state, so it is dropped.
+        let mut w0 = entry(0, &[0xAA, 0xBB]);
+        w0.extend(entry(5, &[0xCC]));
+        let mut w2 = entry(0, &[0x11, 0x22]); // dh==0 base
+        w2.extend(entry(336, &[0x99]));       // colliding diff at boundary
+        w2.extend(entry(343, &[0x33]));
+
+        let expect = {
+            let mut e = w0.clone();
+            e.extend(entry(336, &[0x11, 0x22])); // renamed base kept, full frame
+            e.extend(entry(343, &[0x33]));       // colliding diff dropped
+            e
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        create_week_db(tmp.path(), 0, 9, 0, 0, w0.clone());
+        create_week_db(tmp.path(), 2, 9, 0, 0, w2.clone());
+
+        let mut mgr = DatabaseManager::new();
+        mgr.initialize_week_databases(tmp.path()).unwrap();
+
+        assert_eq!(mgr.get_all_diffs(9, 0, 0, 0, u32::MAX), expect);
     }
 
     #[tokio::test]
@@ -822,6 +922,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
         let mut expected = base.clone();
+        expected.extend(entry(168, &[0xCC, 0xDD])); // week-1 dh==0 base kept, renamed to boundary
         expected.extend(entry(7, &[0xEE]));
         assert_eq!(&body[..], &expected[..]);
     }

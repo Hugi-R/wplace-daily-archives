@@ -941,6 +941,7 @@ mod tests {
                 "{:?}",
                 lang
             );
+            assert!(page.contains("window.I18N = {"), "{:?}\n{page}", lang);
         }
     }
 

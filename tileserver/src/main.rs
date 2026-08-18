@@ -16,7 +16,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use axum::{
     body::Bytes,
-    extract::{Path as AxumPath, Query, Request, State},
+    extract::{Path as AxumPath, Query, RawQuery, Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -751,22 +751,29 @@ fn serve_index_lang(ts: Arc<TileServer>, lang: Lang) -> Response {
     }
 }
 
-async fn serve_index_redirect(headers: HeaderMap) -> Response {
+fn with_query(location: &str, raw: Option<&str>) -> String {
+    match raw {
+        Some(q) if !q.is_empty() => format!("{location}?{q}"),
+        _ => location.to_string(),
+    }
+}
+
+async fn serve_index_redirect(headers: HeaderMap, raw: RawQuery) -> Response {
     let accept = headers
         .get(header::ACCEPT_LANGUAGE)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
     let lang = Lang::from_accept_language(&accept);
-    let mut resp = redirect_found(&format!("/{}/", lang.path()));
+    let mut resp = redirect_found(&with_query(&format!("/{}/", lang.path()), raw.0.as_deref()));
     resp.headers_mut()
         .insert(header::VARY, HeaderValue::from_static("accept-language"));
     resp
 }
 
-async fn serve_lang_redirect(AxumPath(lang): AxumPath<String>) -> Response {
+async fn serve_lang_redirect(AxumPath(lang): AxumPath<String>, raw: RawQuery) -> Response {
     match Lang::from_path(&lang) {
-        Some(l) => redirect_found(&format!("/{}/", l.path())),
+        Some(l) => redirect_found(&with_query(&format!("/{}/", l.path()), raw.0.as_deref())),
         None => text_error(StatusCode::NOT_FOUND, "404 page not found"),
     }
 }
@@ -1404,6 +1411,49 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::FOUND);
         assert_eq!(resp.headers().get("location").unwrap(), "/en/");
+    }
+
+    #[tokio::test]
+    async fn index_redirect_preserves_query_string() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?lat=-26.705082&lng=-48.957773&zoom=9.92&version=14233")
+                    .header("accept-language", "en-US,en;q=0.9")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(
+            resp.headers().get("location").unwrap(),
+            "/en/?lat=-26.705082&lng=-48.957773&zoom=9.92&version=14233"
+        );
+    }
+
+    #[tokio::test]
+    async fn lang_redirect_preserves_query_string() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/en?lat=-26.705082")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(
+            resp.headers().get("location").unwrap(),
+            "/en/?lat=-26.705082"
+        );
     }
 
     #[tokio::test]

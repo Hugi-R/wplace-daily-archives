@@ -415,6 +415,13 @@
   <script type="module">
     var wasmModule = null;
 
+    //$$I18N_DICT$$
+    function t(key, args) {
+      const s = (window.I18N && window.I18N[key]) || key;
+      if (!args || args.length === 0) return s;
+      return s.replace(/\{(\d+)\}/g, (m, i) => (args[+i] != null ? args[+i] : m));
+    }
+
     var metricsDecompress = [];
     var metricsDecompressNetwork = [];
     var metricsDecompressProcess = [];
@@ -782,8 +789,8 @@
     menu.style.display = 'none';
     menu.style.zIndex = '10';
     menu.innerHTML = `
-      <div id="download-tile">Download tile</div>
-      <div id="go-wplace-live">Go wplace.live</div>
+      <div id="download-tile">${t('download_tile')}</div>
+      <div id="go-wplace-live">${t('go_wplace_live')}</div>
     `;
     document.body.appendChild(menu);
 
@@ -828,7 +835,7 @@
       const { z, x, y } = lastTileCoords;
       
       if (typeof caches === 'undefined') {
-        alert('Caching is not supported in this browser. Downloading tiles not available.');
+        alert(t('cache_unsupported'));
         return;
       }
 
@@ -848,7 +855,7 @@
         URL.revokeObjectURL(url);
         menu.style.display = 'none';    
       } else {
-        alert('Tile not found in cache. Maybe the tile is empty?');
+        alert(t('tile_not_in_cache'));
       }
     });
 
@@ -912,7 +919,7 @@
       if (zSel.options.length === 0) {
         EXPORT_Z_OPTIONS.forEach(z => {
           const o = document.createElement('option');
-          o.value = z; o.textContent = `z ${z}`;
+          o.value = z; o.textContent = t('export_z', [z]);
           zSel.appendChild(o);
         });
       }
@@ -1042,7 +1049,7 @@
       const hint = document.getElementById('export-hint');
       hint.classList.toggle('show', over);
       hint.textContent = over
-        ? `Too large: ${count} tiles (limit ${cap}). Zoom in or reduce the range.`
+        ? t('too_large', [count, cap])
         : '';
       document.getElementById('export-run-btn').disabled = over;
       drawExportOverlay();
@@ -1074,7 +1081,7 @@
           switchMapToVersion(document.getElementById('export-end').value);
           const eIdx = WPLACE_VERSIONS.findIndex(v => v.version === document.getElementById('export-end').value);
           document.getElementById('export-last-frame').textContent =
-            `Last frame: ${WPLACE_VERSIONS[eIdx].date}`;
+            t('last_frame', [WPLACE_VERSIONS[eIdx].date]);
         } else {
           restoreSavedMapVersion();
           document.getElementById('export-last-frame').textContent = '';
@@ -1102,7 +1109,7 @@
       if (eIdx < sIdx) s.value = e.value;
       const label = WPLACE_VERSIONS[eIdx];
       document.getElementById('export-last-frame').textContent =
-        `Last frame: ${label.date}`;
+        t('last_frame', [label.date]);
       if (exportParams.type === 'apng') switchMapToVersion(e.value);
       recomputeExportInfo();
     });
@@ -1312,7 +1319,7 @@
       if (count > cap) return;
       const label = runBtn.textContent;
       runBtn.disabled = true;
-      runBtn.textContent = "Exporting…";
+      runBtn.textContent = t('exporting');
       try {
         await initWasm();
         const z = BigInt(exportParams.z);
@@ -1331,23 +1338,23 @@
             const data = await wasmModule.wasm_video("diff", z, x1, y1, x2, y2, from, to);
             saveFile(`w${from}-${to}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
           }
-          status.textContent = "Done.";
+          status.textContent = t('done');
         } finally {
           runBtn.textContent = label;
           recomputeExportInfo(); // re-sets #export-run-btn.disabled from the current caps
         }
       } catch (e) {
         status.classList.add('error');
-        status.textContent = `Export failed: ${e}`;
+        status.textContent = t('export_failed', [e]);
         console.error(e);
       }
     });
 
-    window.log_user_message = async function(message) {
+    window.log_user_message = async function(key, args) {
       const status = document.getElementById('export-status');
       while (status.childElementCount >= 50) status.firstElementChild.remove();
       const p = document.createElement('p');
-      p.textContent = message;
+      p.textContent = t(key, args || []);
       status.appendChild(p);
       return new Promise(resolve => setTimeout(resolve, 50)); // ensure message renders before heavy wasm work
     };

@@ -918,6 +918,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn real_template_renders_all_languages_without_leftovers() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let tmpl = std::fs::read_to_string(repo.join("frontend").join("index.html")).unwrap();
+        let dicts = i18n::load_translations(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let options = "{version: '0', date: '2025-01-01T00'}";
+        for lang in Lang::ALL {
+            let page = render_index(&tmpl, lang, &dicts[&lang], options).unwrap();
+            for marker in [
+                "{{t:",
+                "{{LANG_PATH}}",
+                "{{HREFLANG_LINKS}}",
+                "{{LANG_SWITCHER}}",
+                "//$$I18N_DICT$$",
+                "//$$VERSION_OPTIONS$$",
+            ] {
+                assert!(!page.contains(marker), "{:?} still contains {marker}", lang);
+            }
+            assert!(
+                page.contains(&format!("<html lang=\"{}\">", lang.code())),
+                "{:?}",
+                lang
+            );
+        }
+    }
+
     /// One TileHistory frame entry: [u32 LE date][u32 LE block_size][block_size payload bytes].
     fn entry(date: u32, payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();

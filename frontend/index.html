@@ -782,8 +782,8 @@
     menu.style.display = 'none';
     menu.style.zIndex = '10';
     menu.innerHTML = `
-      <div id="download-tile">{{t:download_tile}}</div>
-      <div id="go-wplace-live">{{t:go_wplace_live}}</div>
+      <div id="download-tile">Download tile</div>
+      <div id="go-wplace-live">Go wplace.live</div>
     `;
     document.body.appendChild(menu);
 
@@ -828,7 +828,7 @@
       const { z, x, y } = lastTileCoords;
       
       if (typeof caches === 'undefined') {
-        alert('{{t:cache_unsupported}}');
+        alert('Caching is not supported in this browser. Downloading tiles not available.');
         return;
       }
 
@@ -848,7 +848,7 @@
         URL.revokeObjectURL(url);
         menu.style.display = 'none';    
       } else {
-        alert('{{t:tile_not_in_cache}}');
+        alert('Tile not found in cache. Maybe the tile is empty?');
       }
     });
 
@@ -1042,7 +1042,7 @@
       const hint = document.getElementById('export-hint');
       hint.classList.toggle('show', over);
       hint.textContent = over
-        ? `{{t:too_large}}`
+        ? `Too large: ${count} tiles (limit ${cap}). Zoom in or reduce the range.`
         : '';
       document.getElementById('export-run-btn').disabled = over;
       drawExportOverlay();
@@ -1312,7 +1312,7 @@
       if (count > cap) return;
       const label = runBtn.textContent;
       runBtn.disabled = true;
-      runBtn.textContent = "{{t:exporting}}";
+      runBtn.textContent = "Exporting…";
       try {
         await initWasm();
         const z = BigInt(exportParams.z);
@@ -1331,14 +1331,14 @@
             const data = await wasmModule.wasm_video("diff", z, x1, y1, x2, y2, from, to);
             saveFile(`w${from}-${to}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
           }
-          status.textContent = "{{t:done}}";
+          status.textContent = "Done.";
         } finally {
           runBtn.textContent = label;
           recomputeExportInfo(); // re-sets #export-run-btn.disabled from the current caps
         }
       } catch (e) {
         status.classList.add('error');
-        status.textContent = `{{t:export_failed}}`;
+        status.textContent = `Export failed: ${e}`;
         console.error(e);
       }
     });

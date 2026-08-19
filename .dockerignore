@@ -1,0 +1,14 @@
+.git
+target
+frontend/target
+frontend/pkg
+tmp
+tmp*
+bench.db
+*.db
+profile.json.gz
+.worktrees
+.swival
+.agents
+docs
+tasks

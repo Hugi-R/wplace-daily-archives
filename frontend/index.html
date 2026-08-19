@@ -188,7 +188,7 @@
       padding: 10px 24px 10px 16px;
       font-size: 16px;
       min-width: 220px;
-      max-width: 320px;
+      max-width: 410px;
       border: 1px solid var(--border-color);
       align-self: flex-start;
     }
@@ -356,6 +356,16 @@
   </div>
   <div id="extra">
     <datalist id="wplace-version-ticks"></datalist>
+    <div id="encart">
+      <button id="encart-close" aria-label="{{t:close_encart}}" title="{{t:close_encart}}">&times;</button>
+      <div id="encart-content">
+        <p>{{t:encart_p1}}</p>
+        <p>{{t:encart_p2}}</p>
+        <p>{{t:encart_p3}}</p>
+        <p>{{t:encart_p4_pre}}<a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>{{t:encart_p4_post}}</p>
+        <p>{{t:encart_p5_pre}}<a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a>{{t:encart_p5_mid}}<a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>{{t:encart_p5_post}}</p>
+      </div>
+    </div>
     <div id="coord-input">
       <form id="goto-coord-form" style="display:flex;gap:6px;align-items:center;">
         <label for="coord-zoom" style="font-size:15px;">{{t:zoom}}</label>
@@ -369,16 +379,6 @@
     </div>
     <div id="overlay-toggle">
       <label><input type="checkbox" id="toggle-tile-overlay"> {{t:show_tile_overlay}}</label>
-    </div>
-    <div id="encart">
-      <button id="encart-close" aria-label="{{t:close_encart}}" title="{{t:close_encart}}">&times;</button>
-      <div id="encart-content">
-        <p>{{t:encart_p1}}</p>
-        <p>{{t:encart_p2}}</p>
-        <p>{{t:encart_p3}}</p>
-        <p>{{t:encart_p4_pre}}<a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>{{t:encart_p4_post}}</p>
-        <p>{{t:encart_p5_pre}}<a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a>{{t:encart_p5_mid}}<a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>{{t:encart_p5_post}}</p>
-      </div>
     </div>
     <div id="export-wrap">
       <button id="export-btn" title="{{t:export_btn_title}}">{{t:export}}</button>

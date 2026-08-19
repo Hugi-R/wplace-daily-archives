@@ -383,7 +383,7 @@
     <div id="export-wrap">
       <button id="export-btn" title="{{t:export_btn_title}}">{{t:export}}</button>
     </div>
-    <div id="stats" style="z-index: 3; max-width: 300px; background: var(--panel-bg); padding: 10px; border-radius: 4px; box-shadow: var(--shadow-lg); font-size: 14px;">
+    <div id="stats" style="display: none; z-index: 3; max-width: 300px; background: var(--panel-bg); padding: 10px; border-radius: 4px; box-shadow: var(--shadow-lg); font-size: 14px;">
       <p>Decompress: <span id="decompress-stats">NA</span></p>
       <p>Decompress Network: <span id="decompress-network-stats">NA</span></p>
       <p>Decompress Process: <span id="decompress-process-stats">NA</span></p>
@@ -452,6 +452,10 @@
       const s = (window.I18N && window.I18N[key]) || key;
       if (!args || args.length === 0) return s;
       return s.replace(/\{(\d+)\}/g, (m, i) => (args[+i] != null ? args[+i] : m));
+    }
+
+    if (new URLSearchParams(window.location.search).get("debug") === "1") {
+      document.getElementById("stats").style.display = "";
     }
 
     var metricsDecompress = [];

@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.100"
-wimage = { path = "/run/media/system/DataBtrfs/wplace/wplace-image/wimage" }
+wimage = { git = "https://github.com/Hugi-R/wplace-image", rev = "d718548" }
 wasm-bindgen = "0.2.118"
 console_error_panic_hook = "0.1.7"
 wasm-bindgen-futures = "0.4.56"

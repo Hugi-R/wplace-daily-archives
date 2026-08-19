@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-wimage = { path = "/run/media/system/DataBtrfs/wplace/wplace-image/wimage" }
+wimage = { git = "https://github.com/Hugi-R/wplace-image", rev = "d718548" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 crossbeam-channel = "0.5"
 clap = { version = "4.0", features = ["derive"] }

@@ -534,6 +534,7 @@ dependencies = [
 [[package]]
 name = "wimage"
 version = "0.1.0"
+source = "git+https://github.com/Hugi-R/wplace-image?rev=d718548#d718548e6284bf33d5ef5d512b1f35b952474249"
 dependencies = [
  "anyhow",
  "chrono",

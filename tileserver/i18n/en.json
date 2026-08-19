@@ -32,7 +32,6 @@
   "download_tile": "Download tile",
   "go_wplace_live": "Go wplace.live",
   "download_overlay": "Download overlay",
-  "overlay_warning": "Wplace overlay currently has issues and is not pixel perfect. Use Blue Marble in the meantime.",
   "overlay_z11": "Overlay download only available for zoom level 11. Please zoom in to level 11 and try again.",
   "encart_p1": "Explore Wplace world map archives at any zoom level, starting from August 2025.",
   "encart_p2": "Right-click the map for more tools",

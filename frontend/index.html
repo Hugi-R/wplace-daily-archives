@@ -935,8 +935,6 @@
       if (!lastTileCoords) return;
       const { z, x, y } = lastTileCoords;
 
-      alert(t('overlay_warning'));
-
       if (typeof caches === 'undefined') {
         alert(t('cache_unsupported'));
         return;
@@ -985,6 +983,8 @@
           },
           colorMetric: "lab",
           dithering: false,
+          useLegacyColors: false,
+          colorPaletteMode: "all",
           order: 0,
           locked: false,
           hasPlaced: true,

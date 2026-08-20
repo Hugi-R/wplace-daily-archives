@@ -608,6 +608,31 @@ fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Builds a response with a content-crc32 ETag and a 1h-friendly Cache-Control.
+/// Returns `304 Not Modified` when `if_none_match` equals the computed ETag.
+fn cached_response(
+    status: StatusCode,
+    mime: &'static str,
+    max_age: Duration,
+    data: Bytes,
+    if_none_match: Option<&str>,
+) -> Response {
+    let etag = format!("\"{:08x}\"", crc32fast::hash(&data));
+    let out_headers = [
+        (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
+        (
+            header::CACHE_CONTROL,
+            HeaderValue::from_str(&format!("public, max-age={}", max_age.as_secs()))
+                .expect("valid cache-control header"),
+        ),
+        etag_header(&etag),
+    ];
+    if if_none_match == Some(etag.as_str()) {
+        return (StatusCode::NOT_MODIFIED, out_headers).into_response();
+    }
+    (status, out_headers, data).into_response()
+}
+
 /// GET /tiles/{version}/{z}/{x}/{y}.zst
 async fn serve_tile(
     State(ts): State<Arc<TileServer>>,
@@ -1494,5 +1519,57 @@ mod tests {
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         }
+    }
+
+    #[test]
+    fn cached_response_sets_1h_cache_control_and_content_etag() {
+        let resp = cached_response(
+            StatusCode::OK,
+            "application/octet-stream",
+            Duration::from_secs(3600),
+            Bytes::from_static(b"hello"),
+            None,
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=3600"
+        );
+        assert_eq!(
+            resp.headers().get(header::ETAG).unwrap(),
+            &format!("\"{:08x}\"", crc32fast::hash(b"hello"))
+        );
+    }
+
+    #[test]
+    fn cached_response_matching_if_none_match_returns_304() {
+        let body = Bytes::from_static(b"hello");
+        let etag = format!("\"{:08x}\"", crc32fast::hash(&body));
+        let resp = cached_response(
+            StatusCode::OK,
+            "application/octet-stream",
+            Duration::from_secs(3600),
+            body,
+            Some(&etag),
+        );
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers().get(header::ETAG).unwrap(), &etag);
+    }
+
+    #[test]
+    fn cached_response_mismatched_if_none_match_returns_full_body() {
+        let resp = cached_response(
+            StatusCode::OK,
+            "application/octet-stream",
+            Duration::from_secs(3600),
+            Bytes::from_static(b"hello"),
+            Some("\"deadbeef\""),
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn crc32fast_matches_standard_check_vector() {
+        assert_eq!(crc32fast::hash(b"123456789"), 0xCBF4_3926);
     }
 }

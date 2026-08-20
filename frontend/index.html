@@ -718,15 +718,24 @@
         throw err;
       }
 
+      const TILE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
       const cache = typeof caches !== 'undefined' ? await caches.open("merged-tiles") : null;
       const cacheKey = `tile-${version}-${z}-${x}-${y}`;
+      const metaKey = `meta-${cacheKey}`;
 
       if (cache) {
-        // Try to get from cache first
-        const cachedResponse = await cache.match(cacheKey);
-        if (cachedResponse) {
-          const buffer = await cachedResponse.arrayBuffer();
-          return {data: buffer};
+        const [cachedResponse, metaResponse] = await Promise.all([
+          cache.match(cacheKey),
+          cache.match(metaKey)
+        ]);
+        if (cachedResponse && metaResponse) {
+          const meta = await metaResponse.json();
+          if (Date.now() - meta.timestamp < TILE_CACHE_TTL_MS) {
+            const buffer = await cachedResponse.arrayBuffer();
+            return {data: buffer};
+          }
+          await cache.delete(cacheKey);
+          await cache.delete(metaKey);
         }
       }
 
@@ -735,6 +744,9 @@
         // Cache the response for future requests
         const response = new Response(img);
         await cache.put(cacheKey, response);
+        await cache.put(metaKey, new Response(JSON.stringify({ timestamp: Date.now() }), {
+          headers: { 'Content-Type': 'application/json' }
+        }));
       }
       return {data: img};
     });

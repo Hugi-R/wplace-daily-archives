@@ -423,12 +423,12 @@
     </section>
   </div>
   <div class="zoom-button-container">
-    <button class="zoom-button" title="{{t:zoom_in}}" onclick="zoomIn()">
+    <button class="zoom-button" id="zoom-in-btn" title="{{t:zoom_in}}">
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" width="22px" height="22px" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
         <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
       </svg>
     </button>
-    <button class="zoom-button" title="{{t:zoom_out}}" onclick="zoomOut()">
+    <button class="zoom-button" id="zoom-out-btn" title="{{t:zoom_out}}">
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
         <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" />
       </svg>
@@ -1028,6 +1028,9 @@
       if (isNaN(zoom)) return;
       map.zoomTo(zoom);
     }
+
+    document.getElementById('zoom-in-btn').addEventListener('click', zoomIn);
+    document.getElementById('zoom-out-btn').addEventListener('click', zoomOut);
 
     // Export panel state, open/close, bounds/z logic, date selectors, APNG preview
     const exportPanel = document.getElementById('export-panel');

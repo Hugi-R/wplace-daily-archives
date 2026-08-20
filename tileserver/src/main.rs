@@ -600,7 +600,9 @@ fn text_error(status: StatusCode, msg: &str) -> Response {
 // In-memory crc LRU
 // ---------------------------------------------------------------------------
 
-/// Max entries per cache (~25MB worst case for both caches combined).
+/// Max entries per cache. Key/value bytes are ~25MB for both caches combined,
+/// but the `lru` HashMap + intrusive list add ~50-60MB of per-entry overhead
+/// at full occupancy (realistic worst case ~80MB for the feature).
 const CRC_CACHE_CAPACITY: usize = 500_000;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
@@ -645,11 +647,18 @@ impl<K: Hash + Eq> CrcCache<K> {
     }
 
     fn get(&self, key: &K) -> Option<u32> {
-        self.inner.lock().unwrap().get(key).copied()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .copied()
     }
 
     fn insert(&self, key: K, crc: u32) {
-        self.inner.lock().unwrap().put(key, crc);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .put(key, crc);
     }
 }
 
@@ -1447,6 +1456,50 @@ mod tests {
             resp.headers().get("cache-control").unwrap(),
             "public, max-age=3600"
         );
+    }
+
+    #[tokio::test]
+    async fn tile_cache_mismatched_if_none_match_still_reads_db() {
+        let tmp = router_fixture();
+        let db_path = tmp.path().join("weeks").join("w0_0.db");
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+
+        // Populate the crc cache (and touch the DB).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/0/9/0/0.zst")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Delete the row so a DB read would now 404.
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let deleted = conn
+            .execute("DELETE FROM tiles WHERE z = 9 AND x = 0 AND y = 0", [])
+            .unwrap();
+        assert_eq!(deleted, 1, "fixture row must exist before deletion");
+        drop(conn);
+
+        // A MISMATCHED If-None-Match must NOT trigger the fast-path 304; the cache
+        // hit falls through to the DB, which has no row -> 404. This pins down that
+        // the fast path only answers on an exact etag match.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/0/9/0/0.zst")
+                    .header("if-none-match", "\"deadbeef\"")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

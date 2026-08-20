@@ -560,10 +560,6 @@ fn mime_type(filename: &str) -> &'static str {
 // Coordinate helpers
 // ---------------------------------------------------------------------------
 
-fn tile_key(z: i64, x: i64, y: i64) -> String {
-    format!("{z}/{x}/{y}")
-}
-
 fn parse_tile_coords(z_str: &str, x_str: &str, y_str: &str) -> Result<(i64, i64, i64), &'static str> {
     let z: i64 = z_str.parse().map_err(|_| "invalid z coordinate")?;
     let x: i64 = x_str.parse().map_err(|_| "invalid x coordinate")?;
@@ -598,14 +594,6 @@ fn etag_header(etag: &str) -> (HeaderName, HeaderValue) {
         header::ETAG,
         HeaderValue::from_str(etag).unwrap_or(HeaderValue::from_static("\"\"")),
     )
-}
-
-fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
-    headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v == etag)
-        .unwrap_or(false)
 }
 
 /// Builds a response with a content-crc32 ETag and a 1h-friendly Cache-Control.
@@ -654,28 +642,21 @@ async fn serve_tile(
         _ => return text_error(StatusCode::BAD_REQUEST, "invalid version"),
     };
 
-    let etag = format!("\"{}-{}\"", version, tile_key(z, x, y));
-    let out_headers = [
-        (
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/octet-stream"),
-        ),
-        (
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=86400"), // Cache for 1 day
-        ),
-        etag_header(&etag),
-    ];
-
-    if if_none_match(&headers, &etag) {
-        return (StatusCode::NOT_MODIFIED, out_headers).into_response();
-    }
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
 
     let state = ts.clone();
     let result = tokio::task::spawn_blocking(move || state.db.get_tile(z, x, y, version)).await;
 
     match result {
-        Ok(Ok(data)) => (StatusCode::OK, out_headers, data).into_response(),
+        Ok(Ok(data)) => cached_response(
+            StatusCode::OK,
+            "application/octet-stream",
+            Duration::from_secs(3600),
+            Bytes::from(data),
+            if_none_match,
+        ),
         Ok(Err(TileError::TileNotFound)) => text_error(StatusCode::NOT_FOUND, "tile not found"),
         Ok(Err(TileError::VersionNotFound(v))) => {
             text_error(StatusCode::NOT_FOUND, &format!("version {v} not found"))
@@ -735,22 +716,9 @@ async fn serve_all_diff(
 
     info!("Serving diff for tile {z} {x} {y} from {from} to {to}");
 
-    let etag = format!("\"alldiff-{}-from{}-to{}\"", tile_key(z, x, y), from, to);
-    let out_headers = [
-        (
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/octet-stream"),
-        ),
-        (
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=3600"), // Cache for 1 hour
-        ),
-        etag_header(&etag),
-    ];
-
-    if if_none_match(&headers, &etag) {
-        return (StatusCode::NOT_MODIFIED, out_headers).into_response();
-    }
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
 
     let state = ts.clone();
     match tokio::task::spawn_blocking(move || state.db.get_all_diffs(z, x, y, from, to)).await {
@@ -758,7 +726,13 @@ async fn serve_all_diff(
         // intentionally not stored, and /diff/all is open to any z) or no frame in
         // the requested range changed this tile; both are "nothing to render".
         Ok(body) if body.is_empty() => text_error(StatusCode::NOT_FOUND, "diff not found"),
-        Ok(body) => (StatusCode::OK, out_headers, body).into_response(),
+        Ok(body) => cached_response(
+            StatusCode::OK,
+            "application/octet-stream",
+            Duration::from_secs(3600),
+            Bytes::from(body),
+            if_none_match,
+        ),
         Err(e) => {
             error!("Blocking task failed: {e}");
             text_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
@@ -1158,6 +1132,96 @@ mod tests {
         expected.extend(entry(168, &[0xCC, 0xDD])); // week-1 dh==0 base kept, renamed to boundary
         expected.extend(entry(7, &[0xEE]));
         assert_eq!(&body[..], &expected[..]);
+    }
+
+    #[tokio::test]
+    async fn tile_endpoint_has_1h_cache_control_and_content_etag() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/0/9/0/0.zst")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "public, max-age=3600"
+        );
+        assert_eq!(
+            resp.headers().get("etag").unwrap(),
+            &format!("\"{:08x}\"", crc32fast::hash(&entry(0, &[0xAA])))
+        );
+    }
+
+    #[tokio::test]
+    async fn tile_endpoint_returns_304_on_matching_if_none_match() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/0/9/0/0.zst")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let etag = resp.headers().get("etag").unwrap().clone();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/0/9/0/0.zst")
+                    .header("if-none-match", &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers().get("etag").unwrap(), &etag);
+    }
+
+    #[tokio::test]
+    async fn diff_endpoint_returns_304_and_1h_cache_control() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/diff/all/9/0/0.zst?from=0&to=4294967295")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "public, max-age=3600"
+        );
+        let etag = resp.headers().get("etag").unwrap().clone();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/diff/all/9/0/0.zst?from=0&to=4294967295")
+                    .header("if-none-match", &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
     }
 
     #[tokio::test]

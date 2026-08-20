@@ -7,9 +7,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
     env, fs,
+    hash::Hash,
     net::SocketAddr,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -588,6 +590,63 @@ fn text_error(status: StatusCode, msg: &str) -> Response {
         format!("{msg}\n"),
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// In-memory crc LRU
+// ---------------------------------------------------------------------------
+
+/// Max entries per cache (~25MB worst case for both caches combined).
+const CRC_CACHE_CAPACITY: usize = 500_000;
+
+#[derive(Hash, PartialEq, Eq, Clone, Copy)]
+struct TileCrcKey {
+    version: u32,
+    z: u8,
+    x: u16,
+    y: u16,
+}
+
+#[derive(Hash, PartialEq, Eq, Clone, Copy)]
+struct DiffCrcKey {
+    z: u8,
+    x: u16,
+    y: u16,
+    from: u32,
+    to: u32,
+}
+
+/// Bounded in-memory cache of `key -> content crc32`, used to answer ETag
+/// revalidation without a full-blob DB read.
+///
+/// A single global `Mutex` intentionally serializes the (microsecond-scale)
+/// lookup/insert only — DB reads and network I/O stay fully concurrent. The
+/// lock's cost is real but small: `lru::LruCache::get` needs `&mut self`
+/// (promotion mutates the recency list), so even read-heavy revalidations
+/// ping the same cache line. Sharded mutexes or a concurrent cache (`moka`)
+/// would reduce that contention, but for this server's scale the simple lock
+/// wins on maintainability; we accept the known drawback rather than add
+/// moka as a dependency.
+struct CrcCache<K> {
+    inner: Mutex<lru::LruCache<K, u32>>,
+}
+
+impl<K: Hash + Eq> CrcCache<K> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(lru::LruCache::new(
+                NonZeroUsize::new(capacity).expect("capacity must be non-zero"),
+            )),
+        }
+    }
+
+    fn get(&self, key: &K) -> Option<u32> {
+        self.inner.lock().unwrap().get(key).copied()
+    }
+
+    fn insert(&self, key: K, crc: u32) {
+        self.inner.lock().unwrap().put(key, crc);
+    }
 }
 
 fn etag_header(etag: &str) -> (HeaderName, HeaderValue) {
@@ -1746,5 +1805,48 @@ mod tests {
     #[test]
     fn crc32fast_matches_standard_check_vector() {
         assert_eq!(crc32fast::hash(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn crc_cache_insert_then_get() {
+        let cache = CrcCache::<TileCrcKey>::new(2);
+        let key = TileCrcKey { version: 0, z: 9, x: 0, y: 0 };
+        assert_eq!(cache.get(&key), None);
+        cache.insert(key, 0xAABB_CCDD);
+        assert_eq!(cache.get(&key), Some(0xAABB_CCDD));
+    }
+
+    #[test]
+    fn crc_cache_evicts_least_recently_used() {
+        let cache = CrcCache::<TileCrcKey>::new(2);
+        let a = TileCrcKey { version: 0, z: 9, x: 0, y: 0 };
+        let b = TileCrcKey { version: 0, z: 9, x: 1, y: 0 };
+        let c = TileCrcKey { version: 0, z: 9, x: 2, y: 0 };
+        cache.insert(a, 1);
+        cache.insert(b, 2);
+        cache.get(&a); // touch a, so b becomes the LRU entry
+        cache.insert(c, 3); // capacity 2 -> evicts b
+        assert_eq!(cache.get(&a), Some(1));
+        assert_eq!(cache.get(&c), Some(3));
+        assert_eq!(cache.get(&b), None);
+    }
+
+    #[test]
+    fn crc_cache_tolerates_concurrent_access() {
+        let cache = std::sync::Arc::new(CrcCache::<TileCrcKey>::new(10_000));
+        let mut handles = Vec::new();
+        for t in 0..8u16 {
+            let cache = cache.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..10_000u16 {
+                    let key = TileCrcKey { version: 0, z: 9, x: i, y: t };
+                    cache.insert(key, i as u32);
+                    let _ = cache.get(&key);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }

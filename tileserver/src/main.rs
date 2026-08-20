@@ -19,7 +19,7 @@ use axum::{
     extract::{Path as AxumPath, Query, RawQuery, Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -740,21 +740,30 @@ async fn serve_all_diff(
     }
 }
 
-async fn serve_index_en(State(ts): State<Arc<TileServer>>) -> Response {
-    serve_index_lang(ts, Lang::En)
+async fn serve_index_en(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -> Response {
+    serve_index_lang(ts, Lang::En, headers)
 }
 
-async fn serve_index_ja(State(ts): State<Arc<TileServer>>) -> Response {
-    serve_index_lang(ts, Lang::Ja)
+async fn serve_index_ja(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -> Response {
+    serve_index_lang(ts, Lang::Ja, headers)
 }
 
-async fn serve_index_es(State(ts): State<Arc<TileServer>>) -> Response {
-    serve_index_lang(ts, Lang::Es)
+async fn serve_index_es(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -> Response {
+    serve_index_lang(ts, Lang::Es, headers)
 }
 
-fn serve_index_lang(ts: Arc<TileServer>, lang: Lang) -> Response {
+fn serve_index_lang(ts: Arc<TileServer>, lang: Lang, headers: HeaderMap) -> Response {
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
     match ts.index_html.get(&lang) {
-        Some(html) => Html(html.clone()).into_response(),
+        Some(html) => cached_response(
+            StatusCode::OK,
+            "text/html; charset=utf-8",
+            Duration::from_secs(3600),
+            html.clone(),
+            if_none_match,
+        ),
         None => text_error(StatusCode::NOT_FOUND, "404 page not found"),
     }
 }
@@ -796,41 +805,48 @@ fn redirect_found(path: &str) -> Response {
         .into_response()
 }
 
-async fn serve_preview(State(ts): State<Arc<TileServer>>) -> Response {
-    (
+async fn serve_preview(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -> Response {
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    cached_response(
         StatusCode::OK,
-        [(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))],
+        "image/png",
+        Duration::from_secs(3600),
         ts.preview_image.clone(),
+        if_none_match,
     )
-        .into_response()
 }
 
-async fn serve_favicon(State(ts): State<Arc<TileServer>>) -> Response {
-    (
+async fn serve_favicon(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -> Response {
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    cached_response(
         StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("image/x-icon"),
-        )],
+        "image/x-icon",
+        Duration::from_secs(3600),
         ts.favicon.clone(),
+        if_none_match,
     )
-        .into_response()
 }
 
 async fn serve_asset(
     State(ts): State<Arc<TileServer>>,
     AxumPath(filename): AxumPath<String>,
+    headers: HeaderMap,
 ) -> Response {
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
     match ts.assets.get(&filename) {
-        Some(asset) => (
+        Some(asset) => cached_response(
             StatusCode::OK,
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(asset.mime),
-            )],
+            asset.mime,
+            Duration::from_secs(3600),
             asset.data.clone(),
-        )
-            .into_response(),
+            if_none_match,
+        ),
         None => text_error(StatusCode::NOT_FOUND, "404 page not found"),
     }
 }
@@ -1582,6 +1598,83 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[tokio::test]
+    async fn index_page_has_1h_cache_control_and_etag() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .oneshot(Request::builder().uri("/en/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "public, max-age=3600"
+        );
+        assert!(resp.headers().contains_key("etag"));
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "text/html; charset=utf-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn asset_has_1h_cache_control_and_revalidates() {
+        let tmp = router_fixture();
+        let body = "console.log('x')";
+        std::fs::write(tmp.path().join("assets").join("app.js"), body).unwrap();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri("/assets/app.js").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "public, max-age=3600"
+        );
+        assert_eq!(
+            resp.headers().get("etag").unwrap(),
+            &format!("\"{:08x}\"", crc32fast::hash(body.as_bytes()))
+        );
+        let etag = resp.headers().get("etag").unwrap().clone();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .header("if-none-match", &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[tokio::test]
+    async fn preview_and_favicon_have_1h_cache_control() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        for uri in ["/preview.png", "/favicon.ico"] {
+            let resp = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(
+                resp.headers().get("cache-control").unwrap(),
+                "public, max-age=3600",
+                "{uri}"
+            );
+            assert!(resp.headers().contains_key("etag"), "{uri}");
         }
     }
 

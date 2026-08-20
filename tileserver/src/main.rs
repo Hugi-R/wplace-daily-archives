@@ -140,7 +140,7 @@ impl DatabaseManager {
         self.initialize_week_databases(&folder_path.join("weeks"))
     }
 
-    fn get_tile(&self, z: i64, x: i64, y: i64, version: u32) -> Result<Vec<u8>, TileError> {
+    fn get_tile(&self, z: u8, x: u16, y: u16, version: u32) -> Result<Vec<u8>, TileError> {
         let pool = self
             .pools
             .get(&version)
@@ -195,7 +195,7 @@ impl DatabaseManager {
     /// Retrieves all diffs for a given tile across all versions in [from, to].
     /// (The Go version streamed into the `http.ResponseWriter`; here we build the
     /// body in memory, which is simpler and fast enough for tile-sized blobs.)
-    fn get_all_diffs(&self, z: i64, x: i64, y: i64, from: u32, to: u32) -> Vec<u8> {
+    fn get_all_diffs(&self, z: u8, x: u16, y: u16, from: u32, to: u32) -> Vec<u8> {
         let from_week = from / (24 * 7);
         let to_week = to / (24 * 7);
 
@@ -560,13 +560,14 @@ fn mime_type(filename: &str) -> &'static str {
 // Coordinate helpers
 // ---------------------------------------------------------------------------
 
-fn parse_tile_coords(z_str: &str, x_str: &str, y_str: &str) -> Result<(i64, i64, i64), &'static str> {
-    let z: i64 = z_str.parse().map_err(|_| "invalid z coordinate")?;
-    let x: i64 = x_str.parse().map_err(|_| "invalid x coordinate")?;
-    let y: i64 = y_str.parse().map_err(|_| "invalid y coordinate")?;
+fn parse_tile_coords(z_str: &str, x_str: &str, y_str: &str) -> Result<(u8, u16, u16), &'static str> {
+    let z: u8 = z_str.parse().map_err(|_| "invalid z coordinate")?;
+    let x: u16 = x_str.parse().map_err(|_| "invalid x coordinate")?;
+    let y: u16 = y_str.parse().map_err(|_| "invalid y coordinate")?;
 
-    // Validate coordinates (basic sanity check)
-    if !(0..=11).contains(&z) || x < 0 || y < 0 || x >= (1 << z) || y >= (1 << z) {
+    // Validate coordinates (basic sanity check). z is already bounded
+    // by the first disjunct (short-circuit), so the shifts never overflow.
+    if !(0..=11).contains(&z) || x >= (1u16 << z) || y >= (1u16 << z) {
         return Err("tile coordinate out of bound");
     }
     Ok((z, x, y))
@@ -1003,7 +1004,7 @@ mod tests {
         out
     }
 
-    fn create_week_db(dir: &std::path::Path, week: u32, z: i64, x: i64, y: i64, data: Vec<u8>) {
+    fn create_week_db(dir: &std::path::Path, week: u32, z: u8, x: u16, y: u16, data: Vec<u8>) {
         std::fs::create_dir_all(dir).unwrap();
         let conn = rusqlite::Connection::open(dir.join(format!("w{week}_0.db"))).unwrap();
         conn.execute_batch(
@@ -1041,7 +1042,7 @@ mod tests {
             e
         };
 
-        for z in [9i64, 0i64] {
+        for z in [9u8, 0u8] {
             let tmp = tempfile::tempdir().unwrap();
             create_week_db(tmp.path(), 0, z, 0, 0, base.clone());
             create_week_db(tmp.path(), 1, z, 0, 0, w1.clone());
@@ -1111,6 +1112,23 @@ mod tests {
         mgr.initialize_week_databases(tmp.path()).unwrap();
 
         assert_eq!(mgr.get_all_diffs(9, 0, 0, 0, u32::MAX), expect);
+    }
+
+    #[test]
+    fn parse_tile_coords_returns_narrow_types_and_validates_bounds() {
+        let (z, x, y): (u8, u16, u16) = parse_tile_coords("9", "511", "0").unwrap();
+        assert_eq!((z, x, y), (9, 511, 0));
+
+        for bad in [
+            ("12", "0", "0"),
+            ("9", "512", "0"),
+            ("9", "0", "512"),
+            ("9", "10000", "0"),
+        ] {
+            assert!(parse_tile_coords(bad.0, bad.1, bad.2).is_err(), "{bad:?}");
+        }
+        assert!(parse_tile_coords("abc", "0", "0").is_err());
+        assert!(parse_tile_coords("9", "-1", "0").is_err());
     }
 
     #[tokio::test]

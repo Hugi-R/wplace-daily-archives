@@ -726,14 +726,16 @@ async fn serve_tile(
     // the crc can never go stale. Hit + matching If-None-Match -> 304 with no
     // DB read at all.
     let key = TileCrcKey { version, z, x, y };
-    if let Some(crc) = ts.tile_crcs.get(&key) {
-        let etag = format!("\"{:08x}\"", crc);
-        if if_none_match == Some(etag.as_str()) {
-            return (
-                StatusCode::NOT_MODIFIED,
-                crc_response_headers("application/octet-stream", Duration::from_secs(3600), &etag),
-            )
-                .into_response();
+    if let Some(inm) = if_none_match {
+        if let Some(crc) = ts.tile_crcs.get(&key) {
+            let etag = format!("\"{:08x}\"", crc);
+            if inm == etag.as_str() {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    crc_response_headers("application/octet-stream", Duration::from_secs(3600), &etag),
+                )
+                    .into_response();
+            }
         }
     }
 
@@ -818,14 +820,16 @@ async fn serve_all_diff(
 
     // Same fast path as serve_tile, keyed additionally by the requested range.
     let key = DiffCrcKey { z, x, y, from, to };
-    if let Some(crc) = ts.diff_crcs.get(&key) {
-        let etag = format!("\"{:08x}\"", crc);
-        if if_none_match == Some(etag.as_str()) {
-            return (
-                StatusCode::NOT_MODIFIED,
-                crc_response_headers("application/octet-stream", Duration::from_secs(3600), &etag),
-            )
-                .into_response();
+    if let Some(inm) = if_none_match {
+        if let Some(crc) = ts.diff_crcs.get(&key) {
+            let etag = format!("\"{:08x}\"", crc);
+            if inm == etag.as_str() {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    crc_response_headers("application/octet-stream", Duration::from_secs(3600), &etag),
+                )
+                    .into_response();
+            }
         }
     }
 
@@ -1419,8 +1423,10 @@ mod tests {
 
         // Delete the row from the DB file so any DB read would now 404.
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("DELETE FROM tiles WHERE z = 9 AND x = 0 AND y = 0", [])
+        let deleted = conn
+            .execute("DELETE FROM tiles WHERE z = 9 AND x = 0 AND y = 0", [])
             .unwrap();
+        assert_eq!(deleted, 1, "fixture row must exist before deletion");
         drop(conn);
 
         // Echoing If-None-Match must still return 304, served from the crc cache
@@ -1436,6 +1442,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers().get("etag").unwrap(), &etag);
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "public, max-age=3600"
+        );
     }
 
     #[tokio::test]
@@ -1459,8 +1470,10 @@ mod tests {
         let etag = resp.headers().get("etag").unwrap().clone();
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("DELETE FROM tiles WHERE z = 9 AND x = 0 AND y = 0", [])
+        let deleted = conn
+            .execute("DELETE FROM tiles WHERE z = 9 AND x = 0 AND y = 0", [])
             .unwrap();
+        assert_eq!(deleted, 1, "fixture row must exist before deletion");
         drop(conn);
 
         let resp = app
@@ -1474,6 +1487,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers().get("etag").unwrap(), &etag);
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "public, max-age=3600"
+        );
     }
 
     #[test]

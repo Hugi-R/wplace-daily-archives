@@ -35,6 +35,10 @@ the whole handler stack as `i64`.
 - `parse_tile_coords` returns `Result<(u8, u16, u16), &'static str>`.
   `z` parses to `u8`; `x`,`y` parse to `u16`. Validation unchanged
   (`z<=11`, `x,y < 1<<z` — cast `1u16 << z`).
+  Type-range caveat: a value that fits neither the widened parse nor the
+  range check reports the parse error (`invalid {z,x,y} coordinate`) rather
+  than `tile coordinate out of bound` (e.g. `z=300`, `x>=65536`, negatives).
+  HTTP status is still 400; no client/test depends on the body text.
 - Ripple (all in `tileserver/src/main.rs`):
   - `get_tile(self, z: u8, x: u16, y: u16, version: u32)`
   - `get_all_diffs(self, z: u8, x: u16, y: u16, from: u32, to: u32)`

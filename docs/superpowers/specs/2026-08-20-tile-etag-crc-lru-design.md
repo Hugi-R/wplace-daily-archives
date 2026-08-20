@@ -41,10 +41,10 @@ the whole handler stack as `i64`.
   - call sites in `serve_tile` and `serve_all_diff` (they receive u8/u16
     straight from the parser; `spawn_blocking` closures just pass them on).
 - `rusqlite` binds u8/u16 natively via `ToSql`; `TILE_QUERY` string unchanged.
-- Test helpers: `create_week_db` keeps `z: i64` (SQL-side param, independent).
-  Test callers that pass integer literals to `get_all_diffs`/`get_tile`
-  (e.g. main.rs:1053) keep compiling via inference; the `for z in [9i64, 0i64]`
-  loop (main.rs:1046-1047) becomes `[9u8, 0u8]`.
+- Test helpers: the `for z in [9i64, 0i64]` loop (main.rs:1046-1047) becomes
+  `[9u8, 0u8]`. `create_week_db`'s own coordinate params narrow to the same
+  types (u8/u16 bind natively to SQLite INTEGER; pure SQL-side insertion,
+  behavior unchanged) so the loop's `z: u8` passes through without a cast.
 
 ### 2. CrcCache component
 

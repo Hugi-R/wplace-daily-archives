@@ -351,6 +351,8 @@ struct TileServer {
     preview_image: Bytes,
     favicon: Bytes,
     assets: HashMap<String, Asset>,
+    tile_crcs: CrcCache<TileCrcKey>,
+    diff_crcs: CrcCache<DiffCrcKey>,
 }
 
 impl TileServer {
@@ -391,6 +393,8 @@ impl TileServer {
             preview_image,
             favicon,
             assets,
+            tile_crcs: CrcCache::new(CRC_CACHE_CAPACITY),
+            diff_crcs: CrcCache::new(CRC_CACHE_CAPACITY),
         })
     }
 }
@@ -656,6 +660,25 @@ fn etag_header(etag: &str) -> (HeaderName, HeaderValue) {
     )
 }
 
+/// The header set shared by the 200 and 304 branches. The fast-path 304
+/// (served straight from the crc cache, without a DB read) uses this too, so
+/// its headers stay byte-identical to what the compute path emits.
+fn crc_response_headers(
+    mime: &'static str,
+    max_age: Duration,
+    etag: &str,
+) -> [(HeaderName, HeaderValue); 3] {
+    [
+        (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
+        (
+            header::CACHE_CONTROL,
+            HeaderValue::from_str(&format!("public, max-age={}", max_age.as_secs()))
+                .expect("valid cache-control header"),
+        ),
+        etag_header(etag),
+    ]
+}
+
 /// Builds a response with a content-crc32 ETag and a 1h-friendly Cache-Control.
 /// Returns `304 Not Modified` when `if_none_match` equals the computed ETag.
 fn cached_response(
@@ -666,15 +689,7 @@ fn cached_response(
     if_none_match: Option<&str>,
 ) -> Response {
     let etag = format!("\"{:08x}\"", crc32fast::hash(&data));
-    let out_headers = [
-        (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
-        (
-            header::CACHE_CONTROL,
-            HeaderValue::from_str(&format!("public, max-age={}", max_age.as_secs()))
-                .expect("valid cache-control header"),
-        ),
-        etag_header(&etag),
-    ];
+    let out_headers = crc_response_headers(mime, max_age, &etag);
     if if_none_match == Some(etag.as_str()) {
         return (StatusCode::NOT_MODIFIED, out_headers).into_response();
     }
@@ -706,17 +721,38 @@ async fn serve_tile(
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok());
 
+    // Fast path: a crc already cached for this tile means the blob was read
+    // once before, and week blobs are immutable for the process lifetime, so
+    // the crc can never go stale. Hit + matching If-None-Match -> 304 with no
+    // DB read at all.
+    let key = TileCrcKey { version, z, x, y };
+    if let Some(crc) = ts.tile_crcs.get(&key) {
+        let etag = format!("\"{:08x}\"", crc);
+        if if_none_match == Some(etag.as_str()) {
+            return (
+                StatusCode::NOT_MODIFIED,
+                crc_response_headers("application/octet-stream", Duration::from_secs(3600), &etag),
+            )
+                .into_response();
+        }
+    }
+
     let state = ts.clone();
     let result = tokio::task::spawn_blocking(move || state.db.get_tile(z, x, y, version)).await;
 
     match result {
-        Ok(Ok(data)) => cached_response(
-            StatusCode::OK,
-            "application/octet-stream",
-            Duration::from_secs(3600),
-            Bytes::from(data),
-            if_none_match,
-        ),
+        Ok(Ok(data)) => {
+            // Keep cached_response untouched; it recomputes the crc. The extra
+            // crc pass on this cold path is cheap next to the DB read.
+            ts.tile_crcs.insert(key, crc32fast::hash(&data));
+            cached_response(
+                StatusCode::OK,
+                "application/octet-stream",
+                Duration::from_secs(3600),
+                Bytes::from(data),
+                if_none_match,
+            )
+        }
         Ok(Err(TileError::TileNotFound)) => text_error(StatusCode::NOT_FOUND, "tile not found"),
         Ok(Err(TileError::VersionNotFound(v))) => {
             text_error(StatusCode::NOT_FOUND, &format!("version {v} not found"))
@@ -780,19 +816,35 @@ async fn serve_all_diff(
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok());
 
+    // Same fast path as serve_tile, keyed additionally by the requested range.
+    let key = DiffCrcKey { z, x, y, from, to };
+    if let Some(crc) = ts.diff_crcs.get(&key) {
+        let etag = format!("\"{:08x}\"", crc);
+        if if_none_match == Some(etag.as_str()) {
+            return (
+                StatusCode::NOT_MODIFIED,
+                crc_response_headers("application/octet-stream", Duration::from_secs(3600), &etag),
+            )
+                .into_response();
+        }
+    }
+
     let state = ts.clone();
     match tokio::task::spawn_blocking(move || state.db.get_all_diffs(z, x, y, from, to)).await {
         // An empty diff means either the tile does not exist at this z (z=10 is
         // intentionally not stored, and /diff/all is open to any z) or no frame in
         // the requested range changed this tile; both are "nothing to render".
         Ok(body) if body.is_empty() => text_error(StatusCode::NOT_FOUND, "diff not found"),
-        Ok(body) => cached_response(
-            StatusCode::OK,
-            "application/octet-stream",
-            Duration::from_secs(3600),
-            Bytes::from(body),
-            if_none_match,
-        ),
+        Ok(body) => {
+            ts.diff_crcs.insert(key, crc32fast::hash(&body));
+            cached_response(
+                StatusCode::OK,
+                "application/octet-stream",
+                Duration::from_secs(3600),
+                Bytes::from(body),
+                if_none_match,
+            )
+        }
         Err(e) => {
             error!("Blocking task failed: {e}");
             text_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
@@ -1342,6 +1394,86 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn tile_cache_hit_304_does_not_read_db() {
+        let tmp = router_fixture();
+        let db_path = tmp.path().join("weeks").join("w0_0.db");
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+
+        // First request populates the in-memory crc cache (and hits the DB).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/0/9/0/0.zst")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let etag = resp.headers().get("etag").unwrap().clone();
+
+        // Delete the row from the DB file so any DB read would now 404.
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("DELETE FROM tiles WHERE z = 9 AND x = 0 AND y = 0", [])
+            .unwrap();
+        drop(conn);
+
+        // Echoing If-None-Match must still return 304, served from the crc cache
+        // with no DB read — otherwise the deleted row would yield 404.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/0/9/0/0.zst")
+                    .header("if-none-match", &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[tokio::test]
+    async fn diff_cache_hit_304_does_not_read_db() {
+        let tmp = router_fixture();
+        let db_path = tmp.path().join("weeks").join("w0_0.db");
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/diff/all/9/0/0.zst?from=0&to=4294967295")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let etag = resp.headers().get("etag").unwrap().clone();
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("DELETE FROM tiles WHERE z = 9 AND x = 0 AND y = 0", [])
+            .unwrap();
+        drop(conn);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/diff/all/9/0/0.zst?from=0&to=4294967295")
+                    .header("if-none-match", &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
     }
 
     #[test]

@@ -60,6 +60,15 @@ struct CrcCache<K> {
 }
 ```
 
+Concurrency note: a single global `Mutex` serializes the (microsecond-scale)
+cache lookup/insert only — DB reads and network I/O stay fully concurrent.
+The lock's cost is real but small: `lru::LruCache::get` needs `&mut self`
+(promotion mutates the recency list), so even read-heavy revalidations ping
+the same cache line. Sharded mutexes or a concurrent cache (`moka`) would
+reduce contention, but for this server's scale the simple lock wins on
+maintainability; a comment on `CrcCache` documents the known drawback and
+deliberate choice to stay simple.
+
 - Dependency: add `lru = "0.16"` to `tileserver/Cargo.toml` (not currently in
   the lockfile; small crate, no native deps).
 - `get(&self, key: &K) -> Option<u32>` and

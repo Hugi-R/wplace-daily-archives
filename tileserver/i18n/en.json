@@ -36,7 +36,7 @@
   "encart_p1": "Explore Wplace world map archives at any zoom level, starting from August 2025.",
   "encart_p2": "Right-click the map for more tools",
   "encart_p3": "Each zoom level halves the image resolution. The pixel is chosen by majority.",
-  "encart_p5_pre": "Report bugs on ",
+  "encart_p5_pre": "Send feedbacks to ",
   "encart_p5_mid": " or to ",
   "encart_p5_post": ".",
   "export_z": "z {0}",

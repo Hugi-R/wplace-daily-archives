@@ -515,6 +515,18 @@ fn build_index(data_path: &Path, dates: &[u32]) -> Result<(BTreeMap<Lang, String
     Ok((pages, latest_version))
 }
 
+/// Builds the robots.txt body: block heavy binary data endpoints, declare
+/// the sitemap. `/assets/` stays crawlable so search engines can render.
+fn build_robots_txt() -> String {
+    format!(
+        "User-agent: *\n\
+         Disallow: /tiles/\n\
+         Disallow: /diff/\n\
+         \n\
+         Sitemap: {SITE_BASE}/sitemap.xml\n"
+    )
+}
+
 /// Loads static assets from the assets directory.
 fn load_assets(data_path: &Path) -> Result<HashMap<String, Asset>> {
     let folder = data_path.join("assets");
@@ -1701,6 +1713,18 @@ mod tests {
         let dicts = i18n::load_translations(tmp.path()).unwrap();
         let page = render_index("<p>{{t:v}}</p>", Lang::En, &dicts[&Lang::En], "").unwrap();
         assert!(page.contains("a&quot;&lt;b&gt;&amp;c"), "{page}");
+    }
+
+    #[test]
+    fn build_robots_txt_blocks_data_endpoints_and_declares_sitemap() {
+        let body = build_robots_txt();
+        assert!(body.starts_with("User-agent: *\n"), "{body}");
+        assert!(body.contains("Disallow: /tiles/\n"), "{body}");
+        assert!(body.contains("Disallow: /diff/\n"), "{body}");
+        assert!(
+            body.contains(&format!("Sitemap: {SITE_BASE}/sitemap.xml")),
+            "{body}"
+        );
     }
 
     #[test]

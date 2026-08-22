@@ -527,6 +527,40 @@ fn build_robots_txt() -> String {
     )
 }
 
+/// Builds the sitemap body: one entry per language page with the full
+/// hreflang alternate set (plus x-default), lastmod derived from the latest
+/// archive version, daily changefreq (new snapshots land daily). The root
+/// URL is excluded on purpose: it is an Accept-Language redirect, not
+/// canonical content.
+fn build_sitemap_xml(latest_epoch_hour: u32) -> String {
+    let lastmod = format!("{}:00:00+00:00", epoch_hour_to_date(latest_epoch_hour));
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"\n\
+         xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">\n",
+    );
+    for lang in Lang::ALL {
+        out.push_str("  <url>\n");
+        out.push_str(&format!("    <loc>{SITE_BASE}/{}/</loc>\n", lang.path()));
+        for alt in Lang::ALL {
+            out.push_str(&format!(
+                "    <xhtml:link rel=\"alternate\" hreflang=\"{}\" href=\"{SITE_BASE}/{}/\"/>\n",
+                alt.code(),
+                alt.path()
+            ));
+        }
+        out.push_str(&format!(
+            "    <xhtml:link rel=\"alternate\" hreflang=\"x-default\" href=\"{SITE_BASE}/{}/\"/>\n",
+            Lang::En.path()
+        ));
+        out.push_str(&format!("    <lastmod>{lastmod}</lastmod>\n"));
+        out.push_str("    <changefreq>daily</changefreq>\n");
+        out.push_str("  </url>\n");
+    }
+    out.push_str("</urlset>\n");
+    out
+}
+
 /// Loads static assets from the assets directory.
 fn load_assets(data_path: &Path) -> Result<HashMap<String, Asset>> {
     let folder = data_path.join("assets");
@@ -1724,6 +1758,63 @@ mod tests {
         assert!(
             body.contains(&format!("Sitemap: {SITE_BASE}/sitemap.xml")),
             "{body}"
+        );
+    }
+
+    #[test]
+    fn build_sitemap_xml_lists_all_languages_with_alternates() {
+        let xml = build_sitemap_xml(0);
+        assert!(
+            xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\""),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("xmlns:xhtml=\"http://www.w3.org/1999/xhtml\""),
+            "{xml}"
+        );
+        // One entry per language page; root "/" excluded (it is a redirect).
+        assert_eq!(xml.matches("<url>").count(), Lang::ALL.len(), "{xml}");
+        for lang in Lang::ALL {
+            assert!(
+                xml.contains(&format!("<loc>{SITE_BASE}/{}/</loc>", lang.path())),
+                "{xml}"
+            );
+            // Every language appears as an alternate once per entry.
+            assert_eq!(
+                xml.matches(&format!("hreflang=\"{}\"", lang.code())).count(),
+                Lang::ALL.len(),
+                "{xml}"
+            );
+        }
+        assert_eq!(
+            xml.matches("hreflang=\"x-default\"").count(),
+            Lang::ALL.len(),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(&format!(
+                "hreflang=\"x-default\" href=\"{SITE_BASE}/{}/\"",
+                Lang::En.path()
+            )),
+            "{xml}"
+        );
+        assert_eq!(
+            xml.matches("<changefreq>daily</changefreq>").count(),
+            Lang::ALL.len(),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn build_sitemap_xml_lastmod_from_latest_epoch_hour() {
+        let xml = build_sitemap_xml(0);
+        assert!(
+            xml.contains("<lastmod>2025-01-01T00:00:00+00:00</lastmod>"),
+            "{xml}"
         );
     }
 

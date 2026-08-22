@@ -36,6 +36,7 @@ COPY --from=wasm /build/frontend/pkg/wimage_wasm_bg.wasm assets/wimage_wasm_bg.w
 COPY frontend/assets/tile-worker.js assets/tile-worker.js
 COPY frontend/index.html index.html.tmpl
 COPY frontend/favicon.ico favicon.ico
+COPY frontend/osm000.png osm000.png
 COPY tileserver/i18n/ i18n/
 
 # ---- Final image ----

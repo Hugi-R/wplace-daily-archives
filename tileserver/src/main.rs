@@ -11,7 +11,8 @@ use std::{
     net::SocketAddr,
     num::NonZeroUsize,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -34,6 +35,7 @@ use tracing::{error, info, warn};
 use scheduled_thread_pool::ScheduledThreadPool;
 
 mod i18n;
+mod preview;
 use i18n::{html_escape, Lang};
 
 // ---------------------------------------------------------------------------
@@ -56,7 +58,7 @@ enum TileError {
     Pool(#[from] r2d2::Error),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct DatabaseManager {
     /// version (week number) -> pool of read-only connections.
     pools: HashMap<u32, SqlitePool>,
@@ -192,6 +194,18 @@ impl DatabaseManager {
 
         dates.sort_unstable();
         dates
+    }
+
+    /// Latest week (DB version) and the newest snapshot date stored in it.
+    fn latest_snapshot(&self) -> Option<(u32, u32)> {
+        let week = *self.pools.keys().max()?;
+        let pool = &self.pools[&week];
+        let conn = pool.get().ok()?;
+        let date: Option<u32> = conn
+            .query_row("SELECT MAX(date) FROM versions", [], |r| r.get(0))
+            .ok()
+            .flatten();
+        date.map(|date| (week, date))
     }
 
     /// Retrieves all diffs for a given tile across all versions in [from, to].
@@ -348,7 +362,8 @@ struct TileServer {
     index_html: BTreeMap<Lang, Bytes>,
     #[allow(dead_code)]
     latest_version: String,
-    preview_image: Bytes,
+    /// Computed asynchronously after startup so it never delays serving.
+    preview_image: Arc<OnceLock<Bytes>>,
     favicon: Bytes,
     robots_txt: Bytes,
     sitemap_xml: Bytes,
@@ -374,13 +389,23 @@ impl TileServer {
             *dates.last().expect("build_index validated non-empty dates"),
         ));
 
-        let preview_image = match make_latest_image() {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("Warning: failed to create preview image: {e}");
-                Bytes::new()
-            }
-        };
+        // Build the preview image on a background thread so startup isn't blocked
+        // on reading every z=2 tile and downscaling. `serve_preview` serves the
+        // result once it's ready, 503 until then.
+        let preview_image = Arc::new(OnceLock::new());
+        {
+            let preview_image = Arc::clone(&preview_image);
+            let db = db.clone();
+            let data_path = data_path.clone();
+            thread::spawn(move || match preview::make_latest_image(&db, &data_path) {
+                Ok(bytes) => {
+                    if preview_image.set(bytes).is_ok() {
+                        info!("preview image ready");
+                    }
+                }
+                Err(e) => warn!("Warning: failed to create preview image: {e:#}"),
+            });
+        }
 
         let favicon = match fs::read(data_path.join("favicon.ico")) {
             Ok(d) => Bytes::from(d),
@@ -406,10 +431,6 @@ impl TileServer {
             diff_crcs: CrcCache::new(CRC_CACHE_CAPACITY),
         })
     }
-}
-
-fn make_latest_image() -> Result<Bytes> {
-    Err(anyhow!("TODO"))
 }
 
 /// Base URL used for canonical links, og:url and hreflang alternates.
@@ -989,11 +1010,14 @@ async fn serve_preview(State(ts): State<Arc<TileServer>>, headers: HeaderMap) ->
     let if_none_match = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok());
+    let Some(preview) = ts.preview_image.get() else {
+        return text_error(StatusCode::SERVICE_UNAVAILABLE, "preview not ready");
+    };
     cached_response(
         StatusCode::OK,
         "image/png",
         Duration::from_secs(3600),
-        ts.preview_image.clone(),
+        preview.clone(),
         if_none_match,
     )
 }
@@ -1876,6 +1900,54 @@ mod tests {
         assert!(!latest.is_empty());
     }
 
+    #[tokio::test]
+    async fn preview_endpoint_503_until_ready_then_serves_png() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts.clone());
+
+        // Not yet computed by the background task -> 503.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/preview.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Simulate the background task completing.
+        let png = wimage::PalettedImage {
+            width: 2,
+            height: 2,
+            indices: vec![1, 2, 3, 4],
+        }
+        .to_png()
+        .unwrap();
+        // The fixture has no z=2 data nor osm000.png, so the background thread
+        // errors and never sets the value; our manual set is the one that lands.
+        ts.preview_image.set(Bytes::from(png)).unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/preview.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("content-type").unwrap(), "image/png");
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "public, max-age=3600"
+        );
+    }
+
     fn router_fixture() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
         create_week_db(&tmp.path().join("weeks"), 0, 9, 0, 0, entry(0, &[0xAA]));
@@ -2170,6 +2242,11 @@ mod tests {
     async fn preview_and_favicon_have_1h_cache_control() {
         let tmp = router_fixture();
         let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        // The background thread can't build a preview here (no osm000.png), so
+        // emulate its completion to exercise the hot path.
+        ts.preview_image
+            .set(Bytes::from(vec![0u8; 8]))
+            .unwrap();
         let app = build_router(ts);
         for uri in ["/preview.png", "/favicon.ico"] {
             let resp = app

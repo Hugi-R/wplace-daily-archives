@@ -6,6 +6,7 @@ cargo build --release
 cp ./target/release/wpda-tileserver ./tmp
 cp ./frontend/pkg/wimage_wasm.js ./frontend/pkg/wimage_wasm_bg.wasm ./tmp/assets/
 cp ./frontend/index.html ./tmp/index.html.tmpl
+cp ./frontend/osm000.png ./tmp/osm000.png
 mkdir -p ./tmp/i18n
 cp ./tileserver/i18n/*.json ./tmp/i18n/
 cp ./frontend/assets/* ./tmp/assets/

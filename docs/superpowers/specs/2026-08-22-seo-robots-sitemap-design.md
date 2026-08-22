@@ -62,9 +62,13 @@ language in `Lang::ALL`; every entry carries the complete alternate set
 (hreflang for each language + `x-default` → `/en/`), mirroring the hreflang
 link tags in the page head. `<lastmod>` is derived from the latest archive
 epoch hour via `epoch_hour_to_date`, formatted as W3C datetime, e.g.
-`2026-08-15T05:00:00+00:00`. The root `/` is intentionally excluded — it is an
-Accept-Language redirect, not canonical content; sitemaps should list only
-200-OK canonical URLs.
+`2026-08-15T05:00:00+00:00`. Each entry also carries
+`<changefreq>daily</changefreq>`: new snapshot versions land daily and the
+rendered HTML changes with them (the embedded version list grows). Note:
+Google ignores `changefreq`; `lastmod` is the operative signal there — the
+tag remains a useful hint for other crawlers and documents intent. The root
+`/` is intentionally excluded — it is an Accept-Language redirect, not
+canonical content; sitemaps should list only 200-OK canonical URLs.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -77,6 +81,7 @@ Accept-Language redirect, not canonical content; sitemaps should list only
     <xhtml:link rel="alternate" hreflang="es" href="https://wplace.eralyon.net/es/"/>
     <xhtml:link rel="alternate" hreflang="x-default" href="https://wplace.eralyon.net/en/"/>
     <lastmod>2026-08-15T05:00:00+00:00</lastmod>
+    <changefreq>daily</changefreq>
   </url>
   <!-- identical structure for /ja/ and /es/ -->
 </urlset>
@@ -129,8 +134,8 @@ handlers only serve prebuilt bytes and cannot fail.
   - each entry carries alternates for every language plus `x-default`;
   - `lastmod` equals the expected W3C datetime for the fixture input;
   - structural string assertions (no new XML-parsing dependency): prolog
-    present, both namespaces declared, `<loc>`/`xhtml:link` counts match
-    `Lang::ALL`.
+    present, both namespaces declared, `<loc>`/`xhtml:link`/
+    `<changefreq>daily</changefreq>` counts match `Lang::ALL`.
 - Router tests via the existing `router_fixture` + tower `oneshot` pattern:
   - `GET /robots.txt` → 200, `text/plain`, expected body;
   - `GET /sitemap.xml` → 200, `application/xml`, body contains all three

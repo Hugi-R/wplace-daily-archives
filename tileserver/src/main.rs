@@ -350,6 +350,8 @@ struct TileServer {
     latest_version: String,
     preview_image: Bytes,
     favicon: Bytes,
+    robots_txt: Bytes,
+    sitemap_xml: Bytes,
     assets: HashMap<String, Asset>,
     tile_crcs: CrcCache<TileCrcKey>,
     diff_crcs: CrcCache<DiffCrcKey>,
@@ -366,6 +368,11 @@ impl TileServer {
             .into_iter()
             .map(|(k, v)| (k, Bytes::from(v)))
             .collect();
+
+        let robots_txt = Bytes::from(build_robots_txt());
+        let sitemap_xml = Bytes::from(build_sitemap_xml(
+            *dates.last().expect("build_index validated non-empty dates"),
+        ));
 
         let preview_image = match make_latest_image() {
             Ok(d) => d,
@@ -392,6 +399,8 @@ impl TileServer {
             latest_version,
             preview_image,
             favicon,
+            robots_txt,
+            sitemap_xml,
             assets,
             tile_crcs: CrcCache::new(CRC_CACHE_CAPACITY),
             diff_crcs: CrcCache::new(CRC_CACHE_CAPACITY),
@@ -1002,6 +1011,32 @@ async fn serve_favicon(State(ts): State<Arc<TileServer>>, headers: HeaderMap) ->
     )
 }
 
+async fn serve_robots(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -> Response {
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    cached_response(
+        StatusCode::OK,
+        "text/plain; charset=utf-8",
+        Duration::from_secs(3600),
+        ts.robots_txt.clone(),
+        if_none_match,
+    )
+}
+
+async fn serve_sitemap(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -> Response {
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    cached_response(
+        StatusCode::OK,
+        "application/xml",
+        Duration::from_secs(3600),
+        ts.sitemap_xml.clone(),
+        if_none_match,
+    )
+}
+
 async fn serve_asset(
     State(ts): State<Arc<TileServer>>,
     AxumPath(filename): AxumPath<String>,
@@ -1055,6 +1090,8 @@ fn build_router(tile_server: Arc<TileServer>) -> Router {
         .route("/{lang}", get(serve_lang_redirect))
         .route("/preview.png", get(serve_preview))
         .route("/favicon.ico", get(serve_favicon))
+        .route("/robots.txt", get(serve_robots))
+        .route("/sitemap.xml", get(serve_sitemap))
         .route("/assets/{filename}", get(serve_asset))
         .layer(middleware::from_fn(logging_middleware))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(15))) // ~ Read/WriteTimeout
@@ -1918,6 +1955,83 @@ mod tests {
             "{body}"
         );
         assert!(body.contains("aria-haspopup=\"menu\""), "{body}");
+    }
+
+    #[tokio::test]
+    async fn robots_txt_served_as_text() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/robots.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let body = String::from_utf8(
+            to_bytes(resp.into_body(), 64 * 1024).await.unwrap().to_vec(),
+        )
+        .unwrap();
+        assert!(body.starts_with("User-agent: *"), "{body}");
+        assert!(
+            body.contains(&format!("Sitemap: {SITE_BASE}/sitemap.xml")),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sitemap_xml_served_as_xml_with_etag_revalidation() {
+        let tmp = router_fixture();
+        let ts = Arc::new(TileServer::new(tmp.path().to_path_buf()).unwrap());
+        let app = build_router(ts);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sitemap.xml")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("content-type").unwrap(), "application/xml");
+        let etag = resp
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body = String::from_utf8(
+            to_bytes(resp.into_body(), 64 * 1024).await.unwrap().to_vec(),
+        )
+        .unwrap();
+        for lang in Lang::ALL {
+            assert!(
+                body.contains(&format!("<loc>{SITE_BASE}/{}/</loc>", lang.path())),
+                "{body}"
+            );
+        }
+        let revalidated = app
+            .oneshot(
+                Request::builder()
+                    .uri("/sitemap.xml")
+                    .header("if-none-match", etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
     }
 
     #[tokio::test]

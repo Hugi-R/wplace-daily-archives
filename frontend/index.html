@@ -618,9 +618,31 @@
     }
     // If a version is present in the URL, try to use it
     const _urlParams = new URLSearchParams(window.location.search);
-    const _urlVersion = _urlParams.get('version');
+    let _urlVersion = _urlParams.get('version');
     if (_urlVersion) {
-      const _idx = WPLACE_VERSIONS.findIndex(v => v.version === _urlVersion);
+      // Backward compatibility: the version param used to be in "v<week>.<hour>"
+      // format where <week> is the week number since 2025-01-01 and <hour> the
+      // hour within that week. Convert it to the new int format (hours since
+      // 2025-01-01).
+      const _oldMatch = /^v(\d+)\.(\d+)$/.exec(_urlVersion);
+      if (_oldMatch) {
+        _urlVersion = String(parseInt(_oldMatch[1]) * 7 * 24 + parseInt(_oldMatch[2]));
+      }
+      let _idx = WPLACE_VERSIONS.findIndex(v => v.version === _urlVersion);
+      if (_idx < 0) {
+        // No exact match; find the nearest available version by numeric value
+        const _target = parseInt(_urlVersion, 10);
+        let _best = -1;
+        let _bestDist = Infinity;
+        WPLACE_VERSIONS.forEach((v, i) => {
+          const _dist = Math.abs(parseInt(v.version, 10) - _target);
+          if (_dist < _bestDist) {
+            _bestDist = _dist;
+            _best = i;
+          }
+        });
+        _idx = _best;
+      }
       if (_idx >= 0) versionSlider.value = _idx;
     }
     updateVersionLabel(versionSlider.value);

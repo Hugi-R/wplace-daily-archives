@@ -1,7 +1,7 @@
 //! Language handling and translation loading for the internationalized index page.
 //!
-//! Translations live in `DATA_PATH/i18n/{en,ja,es}.json` (flat key -> value maps,
-//! all three files sharing the exact same key set). Values may contain `{0}`, `{1}`
+//! Translations live in `DATA_PATH/i18n/{en,ja,es,pt-BR,ko,ru}.json` (flat key -> value maps,
+//! all files sharing the exact same key set). Values may contain `{0}`, `{1}`
 //! positional placeholders that JavaScript fills at runtime via `t(key, args)`.
 
 use std::collections::BTreeMap;
@@ -14,17 +14,23 @@ pub enum Lang {
     En,
     Ja,
     Es,
+    PtBr,
+    Ko,
+    Ru,
 }
 
 #[allow(dead_code)] // path/label/parsing wired up in Task 2
 impl Lang {
-    pub const ALL: [Lang; 3] = [Lang::En, Lang::Ja, Lang::Es];
+    pub const ALL: [Lang; 6] = [Lang::En, Lang::Ja, Lang::Es, Lang::PtBr, Lang::Ko, Lang::Ru];
 
     pub fn code(self) -> &'static str {
         match self {
             Lang::En => "en",
             Lang::Ja => "ja",
             Lang::Es => "es",
+            Lang::PtBr => "pt-BR",
+            Lang::Ko => "ko",
+            Lang::Ru => "ru",
         }
     }
 
@@ -37,6 +43,9 @@ impl Lang {
             Lang::En => "English",
             Lang::Ja => "日本語",
             Lang::Es => "Español",
+            Lang::PtBr => "Português (BR)",
+            Lang::Ko => "한국어",
+            Lang::Ru => "Русский",
         }
     }
 
@@ -56,6 +65,9 @@ impl Lang {
             match primary.as_str() {
                 "ja" => return Lang::Ja,
                 "es" => return Lang::Es,
+                "pt" => return Lang::PtBr,
+                "ko" => return Lang::Ko,
+                "ru" => return Lang::Ru,
                 "en" => return Lang::En,
                 _ => continue,
             }
@@ -68,13 +80,16 @@ impl Lang {
             "en" => Some(Lang::En),
             "ja" => Some(Lang::Ja),
             "es" => Some(Lang::Es),
+            "pt-BR" => Some(Lang::PtBr),
+            "ko" => Some(Lang::Ko),
+            "ru" => Some(Lang::Ru),
             _ => None,
         }
     }
 }
 
-/// Reads `i18n/{en,ja,es}.json` under `data_path` and validates that all three
-/// files share the exact same key set.
+/// Reads `i18n/{lang}.json` files under `data_path` for every [`Lang`] and
+/// validates that all files share the exact same key set as `en.json`.
 pub fn load_translations(data_path: &Path) -> Result<BTreeMap<Lang, BTreeMap<String, String>>> {
     let mut maps = BTreeMap::new();
     for lang in Lang::ALL {

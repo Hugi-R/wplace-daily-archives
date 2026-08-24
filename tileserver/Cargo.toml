@@ -14,7 +14,7 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.25"   # must match the rusqlite version above
 scheduled-thread-pool = "0.2"
 
-wimage = { git = "https://github.com/Hugi-R/wplace-image", rev = "d718548" }
+wimage = { git = "https://github.com/Hugi-R/wplace-image", rev = "2ec663f43143e54b653039faa38a8324096c8f1a" }
 png = "0.18.0"
 
 chrono = "0.4"

@@ -1483,8 +1483,8 @@
       }
     }
 
-    function saveFile(name, bytes) {
-      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+    function saveFile(name, bytes, type = 'image/png') {
+      const url = URL.createObjectURL(new Blob([bytes], { type }));
       const a = document.createElement('a');
       a.href = url;
       a.download = name;
@@ -1521,7 +1521,7 @@
             saveFile(`w${version}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
           } else {
             const data = await wasmModule.wasm_video("/diff", z, x1, y1, x2, y2, from, to);
-            saveFile(`w${from}-${to}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
+            saveFile(`w${from}-${to}-z${z}-${x1}-${y1}-${x2}-${y2}.gif`, data, 'image/gif');
           }
           status.textContent = t('done');
         } finally {

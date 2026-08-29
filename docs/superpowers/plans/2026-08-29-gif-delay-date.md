@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - `frontend/index.html` must keep the literal substring `wasm_video("/diff",` — `tileserver/src/main.rs:1237` asserts it.
-- All 6 i18n files (`en`, `es`, `pt-BR`, `ru`, `ko`, `ja`) must have identical key sets; each language must keep 40..=100 keys (adding 2 keys → 59) — `tileserver/src/main.rs:1188-1200`.
+- All 6 i18n files (`en`, `es`, `pt-BR`, `ru`, `ko`, `ja`) must have identical key sets; each language must keep 40..=100 keys (baseline 55 per language; adding 2 keys → 57) — `tileserver/src/main.rs:1188-1200`.
 - Every `{{t:key}}` marker in `frontend/index.html` must exist in every language file — `render_index` returns `unknown i18n key` error otherwise (`tileserver/src/main.rs:494`).
 - GIF stores frame delay in centiseconds: wimage computes `frame_delay_ms / 10` (wimage `tilehistory.rs:424`). UI range: 10–10000 ms, step 10. Defaults: 200 ms, date off (today's hardcoded behavior).
 - New wasm signature (exact): `wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i64, from: u32, to: u32, delay: u16, date: bool) -> Result<Vec<u8>, JsValue>`.

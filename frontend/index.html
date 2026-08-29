@@ -1517,13 +1517,15 @@
         exportParams.to = document.getElementById('export-end').value;
         const from = parseInt(exportParams.from, 10);
         const to = parseInt(exportParams.to, 10);
+        const delay = Math.min(10000, Math.max(10, parseInt(document.getElementById('export-delay').value, 10) || 200));
+        const showDate = document.getElementById('export-date-cb').checked;
         try {
           if (exportParams.type === 'png') {
             const version = parseInt(wplaceVersion, 10);
             const data = await wasmModule.wasm_screenshot("/tiles", z, version, x1, y1, x2, y2);
             saveFile(`w${version}-z${z}-${x1}-${y1}-${x2}-${y2}.png`, data);
           } else {
-            const data = await wasmModule.wasm_video("/diff", z, x1, y1, x2, y2, from, to);
+            const data = await wasmModule.wasm_video("/diff", z, x1, y1, x2, y2, from, to, delay, showDate);
             saveFile(`w${from}-${to}-z${z}-${x1}-${y1}-${x2}-${y2}.gif`, data, 'image/gif');
           }
           status.textContent = t('done');

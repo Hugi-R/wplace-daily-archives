@@ -110,7 +110,7 @@ pub async fn wasm_screenshot(base_url: &str, z: i64, version: u32, x1: i64, y1: 
 }
 
 #[wasm_bindgen]
-pub async fn wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i64, from: u32, to: u32) -> Result<Vec<u8>, JsValue> {
+pub async fn wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i64, from: u32, to: u32, delay: u16, date: bool) -> Result<Vec<u8>, JsValue> {
     use std::collections::HashMap;
     
     let opts = RequestInit::new();
@@ -152,7 +152,7 @@ pub async fn wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i
 
     log_user_message("download_finish", vec![]).await;
     log_user_message("creating_video", vec![]).await;
-    let img = tilehistory::gif_from_history(history, 200, false)
+    let img = tilehistory::gif_from_history(history, delay, date)
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to create GIF: {}", e)))?;
     log_user_message("done", vec![]).await;
     Ok(img)

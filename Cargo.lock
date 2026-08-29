@@ -1384,7 +1384,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wimage"
 version = "0.1.0"
-source = "git+https://github.com/Hugi-R/wplace-image?rev=2ec663f43143e54b653039faa38a8324096c8f1a#2ec663f43143e54b653039faa38a8324096c8f1a"
+source = "git+https://github.com/Hugi-R/wplace-image?rev=3bcdd0759b306be7ea000dfd38aa8978e5a60943#3bcdd0759b306be7ea000dfd38aa8978e5a60943"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1511,7 +1511,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "wimage 0.1.0 (git+https://github.com/Hugi-R/wplace-image?rev=2ec663f43143e54b653039faa38a8324096c8f1a)",
+ "wimage 0.1.0 (git+https://github.com/Hugi-R/wplace-image?rev=3bcdd0759b306be7ea000dfd38aa8978e5a60943)",
 ]
 
 [[package]]

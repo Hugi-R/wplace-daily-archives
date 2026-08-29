@@ -152,7 +152,7 @@ pub async fn wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i
 
     log_user_message("download_finish", vec![]).await;
     log_user_message("creating_video", vec![]).await;
-    let img = tilehistory::gif_from_history(history, 200)
+    let img = tilehistory::gif_from_history(history, 200, false)
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to create GIF: {}", e)))?;
     log_user_message("done", vec![]).await;
     Ok(img)

@@ -43,6 +43,8 @@
   "last_frame": "最終フレーム: {0}",
   "export_info": "{0}×{1} タイル = {2} · {3}×{4} px",
   "export_frames": "{0} フレーム",
+  "frame_delay": "フレーム間隔 (ms)",
+  "gif_show_date": "隅に日付を表示",
   "too_large": "大きすぎます: {0} タイル (上限 {1})。ズームインするか範囲を狭めてください。",
   "exporting": "エクスポート中…",
   "done": "完了。",

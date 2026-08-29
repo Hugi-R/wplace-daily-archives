@@ -43,6 +43,8 @@
   "last_frame": "마지막 프레임: {0}",
   "export_info": "{0}×{1} 타일 = {2} · {3}×{4} px",
   "export_frames": "{0}프레임",
+  "frame_delay": "프레임 지연 (ms)",
+  "gif_show_date": "모서리에 날짜 표시",
   "too_large": "너무 큽니다: 타일 {0}개 (제한 {1}개). 확대하거나 범위를 줄여 주세요.",
   "exporting": "내보내는 중…",
   "done": "완료.",

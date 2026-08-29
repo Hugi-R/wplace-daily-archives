@@ -43,6 +43,8 @@
   "last_frame": "Último fotograma: {0}",
   "export_info": "{0}×{1} teselas = {2} · {3}×{4} px",
   "export_frames": "{0} fotogramas",
+  "frame_delay": "Retardo de fotograma (ms)",
+  "gif_show_date": "Mostrar fecha en la esquina",
   "too_large": "Demasiado grande: {0} teselas (límite {1}). Acerca o reduce el rango.",
   "exporting": "Exportando…",
   "done": "Listo.",

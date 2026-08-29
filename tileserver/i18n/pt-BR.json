@@ -43,6 +43,8 @@
   "last_frame": "Último quadro: {0}",
   "export_info": "{0}×{1} tiles = {2} · {3}×{4} px",
   "export_frames": "{0} quadros",
+  "frame_delay": "Atraso de quadro (ms)",
+  "gif_show_date": "Mostrar data no canto",
   "too_large": "Grande demais: {0} tiles (limite {1}). Aproxime ou reduza o intervalo.",
   "exporting": "Exportando…",
   "done": "Concluído.",

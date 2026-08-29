@@ -43,6 +43,8 @@
   "last_frame": "Last frame: {0}",
   "export_info": "{0}×{1} tiles = {2} · {3}×{4} px",
   "export_frames": "{0} frames",
+  "frame_delay": "Frame delay (ms)",
+  "gif_show_date": "Show date in corner",
   "too_large": "Too large: {0} tiles (limit {1}). Zoom in or reduce the range.",
   "exporting": "Exporting…",
   "done": "Done.",

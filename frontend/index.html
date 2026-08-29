@@ -413,6 +413,9 @@
       <select id="export-start"></select>
       <label for="export-end">{{t:end_date}}</label>
       <select id="export-end"></select>
+      <label for="export-delay">{{t:frame_delay}}</label>
+      <input type="number" id="export-delay" value="200" min="10" max="10000" step="10">
+      <label><input type="checkbox" id="export-date-cb"> {{t:gif_show_date}}</label>
       <div id="export-last-frame"></div>
     </section>
     <section>

@@ -48,10 +48,11 @@ Animated GIF radio is selected — same show/hide logic as start/end dates):
 
 - `<input type="number" id="export-delay">` — frame delay in ms.
   Default `200`, min `10`, max `10000`, step `10`. GIF stores the delay in
-  centiseconds (`frame_delay_ms / 10` inside wimage), so values outside the
-  range or non-multiples of 10 would silently round; the input constraints
-  make that moot. The run handler additionally clamps with the existing
-  `clampInt`-style logic before passing the value.
+  centiseconds (`frame_delay_ms / 10` inside wimage). Note: HTML `min/max/step`
+  guide the spinner but do not block typed input — e.g. typed `15` passes the
+  clamp and wimage truncates to 1 cs (effective 10 ms); benign, accepted.
+  The run handler additionally clamps to 10–10000 (with 200 fallback for
+  empty/NaN input) before passing the value.
 - `<input type="checkbox" id="export-date-cb">` — show date in corner.
   Default unchecked (today's behavior).
 

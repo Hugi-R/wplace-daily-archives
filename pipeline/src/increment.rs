@@ -878,11 +878,13 @@ pub fn increment(archives_folder: &str, increment_db: &str) -> Result<(PathBuf, 
     increment_archive(increment_db, target_db, date_hours)?;
     add_version(target_db, date_hours, increment_filename)?;
 
-    // If we reused the existing latest archive, its filename may need a datehours bump.
-    let mut archive_path = latest_path.clone();
-    if inc_week == latest_name.week {
-        archive_path = rename_archive_if_needed(&latest_path, latest_name, date_hours.0)?;
-    }
+    let archive_path = if inc_week == latest_name.week {
+        // The latest archive was reused; its filename may need a datehours bump.
+        rename_archive_if_needed(&latest_path, latest_name, date_hours.0)?
+    } else {
+        // A new archive was created for the new week; report that one.
+        target_path.clone()
+    };
 
     Ok((archive_path, date_hours))
 }
@@ -1274,6 +1276,68 @@ mod tests {
             |r| r.get(0),
         )?;
         assert_eq!(version, 5376);
+
+        fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    // ─── End-to-end: ingest (increment + merge) on a new week ─────────────
+
+    #[test]
+    fn ingest_new_week_merges_new_archive() -> Result<()> {
+        let dir = make_temp_dir("e2e-ingest-new");
+        let old_path = dir.join("w85_14425.db");
+        create_archive_db(old_path.to_str().unwrap())?;
+
+        // Old week archive: one z=11 child and its z=9 parent, both BLACK at 14425.
+        {
+            let conn = Connection::open(old_path.to_str().unwrap())?;
+            let blob = history_with(make_tile(palette::BLACK), DateHours(14425));
+            conn.execute(
+                "INSERT INTO tiles (z, x, y, data) VALUES (11, 0, 0, ?1)",
+                params![blob.clone()],
+            )?;
+            conn.execute(
+                "INSERT INTO tiles (z, x, y, data) VALUES (9, 0, 0, ?1)",
+                params![blob],
+            )?;
+        }
+
+        // New-week increment at 14449 (week 86) changing tile (0,0) to RED.
+        let inc_dt = DateHours(14449).to_datetime();
+        let inc_name = format!("inc_{}.db", inc_dt.format("%Y-%m-%dT%H-%M-%SZ").to_string());
+        let inc_path = dir.join(&inc_name);
+        create_increment_db(inc_path.to_str().unwrap(), &[(0, 0, png_for(7))])?;
+
+        // Same flow as the `ingest` command: increment, then merge the returned path.
+        let (archive_path, date_hours) =
+            increment(dir.to_str().unwrap(), inc_path.to_str().unwrap())?;
+        assert_eq!(date_hours, DateHours(14449));
+        assert_eq!(
+            archive_path.file_name().and_then(|f| f.to_str()),
+            Some("w86_14449.db"),
+            "increment() must return the new-week archive, not the old latest one"
+        );
+
+        crate::merge::merge(archive_path.to_str().unwrap(), date_hours)?;
+
+        // The new archive's z=9 must have gained the 14449 merged version...
+        let new_path = dir.join("w86_14449.db");
+        let conn = Connection::open(new_path.to_str().unwrap())?;
+        let blob = read_tile(&conn, 9, 0, 0).expect("seeded z=9 tile (0,0) must exist");
+        let th = TileHistory::from_bytes(&blob).unwrap();
+        assert_eq!(
+            th.list(),
+            vec![DateHours(0), DateHours(14449)],
+            "z=9 of the new archive must contain the merged 14449 version"
+        );
+
+        // ...and the old archive must be untouched.
+        drop(conn);
+        let conn = Connection::open(old_path.to_str().unwrap())?;
+        let blob = read_tile(&conn, 9, 0, 0).unwrap();
+        let th = TileHistory::from_bytes(&blob).unwrap();
+        assert_eq!(th.list(), vec![DateHours(14425)]);
 
         fs::remove_dir_all(&dir).ok();
         Ok(())

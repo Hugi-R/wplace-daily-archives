@@ -71,7 +71,9 @@ Then ingest each daily `inc_*.db` increment, which merges the new tiles and upda
 wpda-pipeline ingest --archives /path/to/weeks --increment ~/Téléchargements/inc_XXX.db
 ```
 
-`makeweek.sh` automates this full base + incremental workflow for a week number.
+`makeweek.sh` automates this workflow: run it without arguments to list the
+weeks composable from the bucket, or `makeweek.sh <week>` to download its
+files and build it.
 
 ## AI Disclose
 An AI spec-driven development workflow was used to develop pretty much everything in this repo, find the specs at [docs/superpowers/specs](/docs/superpowers/specs). [obra/superpowers](https://github.com/obra/superpowers) is great!

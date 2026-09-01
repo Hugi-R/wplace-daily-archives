@@ -1,9 +1,10 @@
 #!/bin/bash
 #
-# List the weekly archives composable from the HF bucket.
+# Build a weekly archive DB for the tileserver from the HF bucket archives.
 #
 # Usage:
-#   makeweek.sh    List the weeks composable from the HF bucket.
+#   makeweek.sh          List the weeks composable from the HF bucket.
+#   makeweek.sh <week>   Download the files composing <week> and build it.
 #
 # A week N is composed of the latest full_*.db taken before the week starts
 # (the base) plus every inc_*.db inside the week. Weeks run Wednesday 00:00Z
@@ -12,7 +13,9 @@
 set -euo pipefail
 
 BUCKET="hf://buckets/Hugi-R/wplace-archives"
+PIPELINE="./target/release/wpda-pipeline"
 EPOCH_SECONDS=1735689600 # 2025-01-01T00:00:00Z, the DateHours epoch
+DOWNLOADFOLDER="${DOWNLOADFOLDER:-$HOME/Téléchargements}"
 
 FULL_FILES=() FULL_DH=() # full/ snapshots and their datehours
 INC_FILES=() INC_DH=()   # incremental/ snapshots and their datehours
@@ -22,6 +25,7 @@ WEEK_INC_FILES=()        # set by select_week: inc_*.db of the week
 usage() {
     cat >&2 <<'EOF'
 Usage: makeweek.sh          list the weeks composable from the HF bucket
+       makeweek.sh <week>   download and build the given week
 EOF
 }
 
@@ -148,10 +152,66 @@ list_weeks() {
     done
 }
 
+# build_week <week>
+# Download the files composing <week> and run the pipeline on them.
+build_week() {
+    local n=$(( 10#$1 ))
+
+    select_week "$n"
+    if [[ -z "$WEEK_BASE" ]]; then
+        echo "error: week $n has no base snapshot in the bucket" >&2
+        exit 1
+    fi
+    if (( ${#WEEK_INC_FILES[@]} == 0 )); then
+        echo "error: week $n has no incremental snapshots in the bucket" >&2
+        exit 1
+    fi
+    if (( ${#WEEK_INC_FILES[@]} < 7 )); then
+        echo "warning: week $n is incomplete: ${#WEEK_INC_FILES[@]}/7 incremental snapshots" >&2
+    fi
+
+    if [[ ! -x "$PIPELINE" ]]; then
+        echo "error: $PIPELINE not found. Build it first: cargo build --release -p wpda-pipeline" >&2
+        exit 1
+    fi
+
+    local workdir="${WORKDIR:-/run/media/system/DataBtrfs/wplace/ramfs/${n}}" # ramfs for speed, need ~20GB
+    mkdir -p "$workdir"
+    if compgen -G "$workdir/w${n}_*.db" > /dev/null; then
+        echo "error: archives for week $n already exist in $workdir; remove them first" >&2
+        exit 1
+    fi
+
+    echo "Working in $workdir"
+    echo "Making week $n from base $WEEK_BASE"
+    uvx hf buckets cp "$BUCKET/full/$WEEK_BASE" "$DOWNLOADFOLDER"
+    "$PIPELINE" makebase --base "$DOWNLOADFOLDER/$WEEK_BASE" --output "$workdir/w${n}_0.db"
+    "$PIPELINE" merge -t 0 "$workdir/w${n}_0.db"
+    rm "$DOWNLOADFOLDER/$WEEK_BASE"
+
+    local inc
+    for inc in "${WEEK_INC_FILES[@]}"; do
+        echo "Ingesting incremental $inc"
+        uvx hf buckets cp "$BUCKET/incremental/$inc" "$DOWNLOADFOLDER"
+        "$PIPELINE" ingest --archives "$workdir" --increment "$DOWNLOADFOLDER/$inc"
+        rm "$DOWNLOADFOLDER/$inc"
+    done
+
+    printf 'Result: %s\n' "$workdir"/w"$n"_*.db
+    echo "Done"
+}
+
 main() {
     if (( $# == 0 )); then
         fetch_listings
         list_weeks
+    elif (( $# == 1 )); then
+        if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+            usage
+            exit 2
+        fi
+        fetch_listings
+        build_week "$1"
     else
         usage
         exit 2

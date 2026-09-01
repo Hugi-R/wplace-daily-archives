@@ -96,10 +96,12 @@ the week's start and end dates (UTC).
 
 ## Build mode flow
 
-1. Check `./target/release/wpda-pipeline` exists; otherwise error with the
-   hint `cargo build --release -p wpda-pipeline` and exit 1.
-2. Resolve week N files. Exit 1 if there is no base or no inc, with an
+1. Resolve week N files. Exit 1 if there is no base or no inc, with an
    explanatory message. Warn (non-fatal) when the inc count is below 7.
+   (Selection resolves first so argument errors are deterministic and
+   independent of the binary or leftover state.)
+2. Check `./target/release/wpda-pipeline` exists; otherwise error with the
+   hint `cargo build --release -p wpda-pipeline` and exit 1.
 3. Abort if `$WORKDIR/w<N>_*.db` already exists (a leftover from a previous
    run would be picked by `find_latest_archive` and poison the build).
 4. `makebase --base <base> --output "$WORKDIR/w<N>_0.db"` then
@@ -125,8 +127,10 @@ Environment-overridable, defaults preserved from the current script:
 - Pure bash (approach A). No new dependencies beyond `uvx hf` already used.
 - One `uvx hf buckets list <prefix> -q` call per folder per invocation, output
   captured to temp files; the `full/` / `incremental/` path prefix is stripped.
-- Helper functions: `snapshot_datehours <filename>`, `select_week <N>`
-  (echoes base and incs), `list_weeks`, `build_week <N>`.
+- Helper functions: `snapshot_datehours <filename>` (prints the datehours),
+  `fetch_listings` (fills the snapshot arrays),
+  `select_week <N>` (sets `WEEK_BASE` and the `WEEK_INC_FILES` array),
+  `list_weeks`, `build_week <N>`.
 
 ## Verification
 

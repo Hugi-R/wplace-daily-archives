@@ -35,6 +35,7 @@ use tracing::{error, info, warn};
 use scheduled_thread_pool::ScheduledThreadPool;
 
 mod i18n;
+mod metrics;
 mod preview;
 use i18n::{html_escape, Lang};
 
@@ -1097,20 +1098,37 @@ async fn serve_asset(
     }
 }
 
-/// Logs HTTP requests (equivalent of the Go `loggingMiddleware`).
+/// Logs HTTP requests (equivalent of the Go `loggingMiddleware`) and records
+/// OpenTelemetry metrics (request count + response-time histogram).
 async fn logging_middleware(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let path = req.uri().path().to_owned();
+    let accept_language = req
+        .headers()
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_owned());
     let start = Instant::now();
 
     let response = next.run(req).await;
+    let elapsed = start.elapsed();
+
+    let route = metrics::normalize_route(&path);
+    let extra = metrics::extra_attributes(&path, route, accept_language.as_deref());
+    metrics::record_request(
+        route,
+        method.as_str(),
+        response.status().as_u16(),
+        elapsed.as_secs_f64(),
+        &extra,
+    );
 
     info!(
         "{} {} {} {:?}",
         method,
         path,
         response.status().as_u16(),
-        start.elapsed()
+        elapsed
     );
     response
 }
@@ -1154,6 +1172,9 @@ async fn main() -> Result<()> {
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let data_path = env::var("DATA_PATH").unwrap_or_else(|_| ".".to_string());
 
+    // Opt-in OTLP metrics; no-op unless an OTLP endpoint is configured.
+    let meter_provider = metrics::init_meter_provider();
+
     let tile_server = match TileServer::new(PathBuf::from(data_path)) {
         Ok(ts) => Arc::new(ts),
         Err(e) => {
@@ -1171,6 +1192,13 @@ async fn main() -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Flush buffered metrics before exit.
+    if let Some(provider) = meter_provider
+        && let Err(e) = provider.shutdown()
+    {
+        error!("OTEL metrics shutdown failed: {e}");
+    }
 
     Ok(())
 }

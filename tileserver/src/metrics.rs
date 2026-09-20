@@ -38,6 +38,23 @@ fn instruments() -> &'static Instruments {
     })
 }
 
+/// Build the OTEL resource: SDK defaults (incl. `OTEL_RESOURCE_ATTRIBUTES`
+/// and `OTEL_SERVICE_NAME` via env detection) plus `service.name`, plus
+/// `deployment.environment.name` when `DEPLOYMENT_ENVIRONMENT` is set.
+/// The dedicated env var wins if both sources define the environment.
+fn build_resource() -> Resource {
+    let builder = Resource::builder().with_service_name("wpda-tileserver");
+    match std::env::var("DEPLOYMENT_ENVIRONMENT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        Some(env) => builder
+            .with_attribute(KeyValue::new("deployment.environment.name", env))
+            .build(),
+        None => builder.build(),
+    }
+}
+
 /// Initialize the global meter provider.
 ///
 /// Opt-in: returns `None` (leaving the global no-op provider in place) unless
@@ -74,11 +91,7 @@ pub fn init_meter_provider() -> Option<SdkMeterProvider> {
         }
     };
     let provider = SdkMeterProvider::builder()
-        .with_resource(
-            Resource::builder()
-                .with_service_name("wpda-tileserver")
-                .build(),
-        )
+        .with_resource(build_resource())
         .with_periodic_exporter(exporter)
         .build();
     global::set_meter_provider(provider.clone());
@@ -402,6 +415,32 @@ mod tests {
     fn extra_attributes_for_other_routes_is_empty() {
         assert!(extra_attributes("/diff/all/9/0/0.zst", "/diff/all/{z}/{x}/{y}", None).is_empty());
         assert!(extra_attributes("/preview.png", "/preview.png", None).is_empty());
+    }
+
+    #[test]
+    fn build_resource_includes_deployment_environment() {
+        use opentelemetry::{Key, Value};
+
+        // SAFETY: this test is the only one touching DEPLOYMENT_ENVIRONMENT.
+        unsafe { std::env::remove_var("DEPLOYMENT_ENVIRONMENT") };
+        assert_eq!(
+            build_resource().get(&Key::new("deployment.environment.name")),
+            None
+        );
+
+        unsafe { std::env::set_var("DEPLOYMENT_ENVIRONMENT", "staging") };
+        let resource = build_resource();
+        assert_eq!(
+            resource.get(&Key::new("deployment.environment.name")),
+            Some(Value::String("staging".into()))
+        );
+        assert!(resource.get(&Key::new("service.name")).is_some());
+
+        unsafe { std::env::remove_var("DEPLOYMENT_ENVIRONMENT") };
+        assert_eq!(
+            build_resource().get(&Key::new("deployment.environment.name")),
+            None
+        );
     }
 
     #[test]

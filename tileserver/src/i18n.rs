@@ -1,6 +1,6 @@
 //! Language handling and translation loading for the internationalized index page.
 //!
-//! Translations live in `DATA_PATH/i18n/{en,ja,es,pt-BR,ko,ru}.json` (flat key -> value maps,
+//! Translations live in `DATA_PATH/i18n/{en,ja,es,pt-BR,ko,ru,tr}.json` (flat key -> value maps,
 //! all files sharing the exact same key set). Values may contain `{0}`, `{1}`
 //! positional placeholders that JavaScript fills at runtime via `t(key, args)`.
 
@@ -17,11 +17,12 @@ pub enum Lang {
     PtBr,
     Ko,
     Ru,
+    Tr,
 }
 
 #[allow(dead_code)] // path/label/parsing wired up in Task 2
 impl Lang {
-    pub const ALL: [Lang; 6] = [Lang::En, Lang::Ja, Lang::Es, Lang::PtBr, Lang::Ko, Lang::Ru];
+    pub const ALL: [Lang; 7] = [Lang::En, Lang::Ja, Lang::Es, Lang::PtBr, Lang::Ko, Lang::Ru, Lang::Tr];
 
     pub fn code(self) -> &'static str {
         match self {
@@ -31,6 +32,7 @@ impl Lang {
             Lang::PtBr => "pt-BR",
             Lang::Ko => "ko",
             Lang::Ru => "ru",
+            Lang::Tr => "tr",
         }
     }
 
@@ -46,6 +48,7 @@ impl Lang {
             Lang::PtBr => "Português (BR)",
             Lang::Ko => "한국어",
             Lang::Ru => "Русский",
+            Lang::Tr => "Türkçe",
         }
     }
 
@@ -68,6 +71,7 @@ impl Lang {
                 "pt" => return Lang::PtBr,
                 "ko" => return Lang::Ko,
                 "ru" => return Lang::Ru,
+                "tr" => return Lang::Tr,
                 "en" => return Lang::En,
                 _ => continue,
             }
@@ -83,6 +87,7 @@ impl Lang {
             "pt-BR" => Some(Lang::PtBr),
             "ko" => Some(Lang::Ko),
             "ru" => Some(Lang::Ru),
+            "tr" => Some(Lang::Tr),
             _ => None,
         }
     }

@@ -965,6 +965,10 @@ async fn serve_index_ru(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -
     serve_index_lang(ts, Lang::Ru, headers)
 }
 
+async fn serve_index_tr(State(ts): State<Arc<TileServer>>, headers: HeaderMap) -> Response {
+    serve_index_lang(ts, Lang::Tr, headers)
+}
+
 fn serve_index_lang(ts: Arc<TileServer>, lang: Lang, headers: HeaderMap) -> Response {
     let if_none_match = headers
         .get(header::IF_NONE_MATCH)
@@ -1126,6 +1130,7 @@ fn build_router(tile_server: Arc<TileServer>) -> Router {
         .route("/pt-BR/", get(serve_index_pt_br))
         .route("/ko/", get(serve_index_ko))
         .route("/ru/", get(serve_index_ru))
+        .route("/tr/", get(serve_index_tr))
         .route("/{lang}", get(serve_lang_redirect))
         .route("/preview.png", get(serve_preview))
         .route("/favicon.ico", get(serve_favicon))
@@ -1678,6 +1683,7 @@ mod tests {
         assert_eq!(Lang::from_accept_language("pt"), Lang::PtBr);
         assert_eq!(Lang::from_accept_language("ko-KR,ko;q=0.9"), Lang::Ko);
         assert_eq!(Lang::from_accept_language("ru-RU,ru;q=0.9"), Lang::Ru);
+        assert_eq!(Lang::from_accept_language("tr-TR,tr;q=0.9"), Lang::Tr);
         // unsupported first tag is skipped; the first supported one wins
         assert_eq!(Lang::from_accept_language("fr-FR,ja;q=0.8,en;q=0.7"), Lang::Ja);
         // none supported -> default English; empty / wildcard also default
@@ -1702,28 +1708,31 @@ mod tests {
         assert_eq!(Lang::Ko.label(), "한국어");
         assert_eq!(Lang::Ru.code(), "ru");
         assert_eq!(Lang::Ru.label(), "Русский");
+        assert_eq!(Lang::Tr.code(), "tr");
+        assert_eq!(Lang::Tr.label(), "Türkçe");
         assert_eq!(Lang::from_path("es"), Some(Lang::Es));
         assert_eq!(Lang::from_path("ja"), Some(Lang::Ja));
         assert_eq!(Lang::from_path("pt-BR"), Some(Lang::PtBr));
         assert_eq!(Lang::from_path("ko"), Some(Lang::Ko));
         assert_eq!(Lang::from_path("ru"), Some(Lang::Ru));
+        assert_eq!(Lang::from_path("tr"), Some(Lang::Tr));
         assert_eq!(Lang::from_path("fr"), None);
         assert_eq!(Lang::from_path(""), None);
-        assert_eq!(Lang::ALL.len(), 6);
+        assert_eq!(Lang::ALL.len(), 7);
     }
 
     fn write_i18n_files(dir: &std::path::Path, en: &str, ja: &str, es: &str) {
         std::fs::create_dir(dir.join("i18n")).unwrap();
         std::fs::write(dir.join("i18n").join("en.json"), en).unwrap();
         std::fs::write(dir.join("i18n").join("ja.json"), ja).unwrap();
-        for code in ["es", "pt-BR", "ko", "ru"] {
+        for code in ["es", "pt-BR", "ko", "ru", "tr"] {
             std::fs::write(dir.join("i18n").join(format!("{code}.json")), es).unwrap();
         }
     }
 
     fn write_i18n(dir: &std::path::Path) {
         std::fs::create_dir(dir.join("i18n")).unwrap();
-        for code in ["en", "ja", "es", "pt-BR", "ko", "ru"] {
+        for code in ["en", "ja", "es", "pt-BR", "ko", "ru", "tr"] {
             std::fs::write(dir.join("i18n").join(format!("{code}.json")), "{}").unwrap();
         }
     }

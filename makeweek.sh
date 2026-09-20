@@ -197,6 +197,9 @@ build_week() {
         rm "$DOWNLOADFOLDER/$inc"
     done
 
+    # Revert WAL mode
+    sqlite3 "$workdir/w${n}_"* "PRAGMA journal_mode=DELETE;"
+
     printf 'Result: %s\n' "$workdir"/w"$n"_*.db
     echo "Done"
 }

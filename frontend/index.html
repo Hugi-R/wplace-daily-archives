@@ -445,8 +445,9 @@
     </button>
   </div>
 
-  <script src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js"></script>
   <script type="module">
+    import * as maplibregl from 'https://unpkg.com/maplibre-gl@^6.4.1/dist/maplibre-gl.mjs';
+    import {getMapStyle} from '/assets/map-styles.js';
     var wasmModule = null;
 
     //$$I18N_DICT$$
@@ -658,61 +659,7 @@
     }
     updateVersionLabel(versionSlider.value);
     let wplaceVersion = WPLACE_VERSIONS[versionSlider.value].version;
-
-    // Function to get wplace tile URL for selected version
-    function getWplaceTileUrl(version) {
-      return `merged://tiles/${version}/{z}/{x}/{y}.png`;
-    }
-
-    // Map style generator for a given wplace version
-    function getMapStyle(version) {
-      return {
-        version: 8,
-        sources: {
-          osm: {
-            type: 'raster',
-            tiles: [
-              'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
-              'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
-              'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
-            ],
-            minzoom: 0,
-            maxzoom: 12,
-            tileSize: 256,
-            attribution: '© OpenStreetMap contributors'
-          },
-          wplace: {
-            type: 'raster',
-            tiles: [
-              getWplaceTileUrl(version)
-            ],
-            minzoom: 0,
-            maxzoom: 11,
-            attribution: '© wplace.live'
-          }
-        },
-        layers: [
-          {
-            id: 'osm',
-            type: 'raster',
-            source: 'osm',
-            minzoom: 0,
-            maxzoom: 19
-          },
-          {
-            id: 'wplace',
-            type: 'raster',
-            source: 'wplace',
-            minzoom: 0,
-            maxzoom: 22,
-            paint: {
-              "raster-fade-duration": 0,
-              "raster-resampling": "nearest"
-            }
-          }
-        ]
-      };
-    }
+    let basemapType = 'vector'; // Can be vector or raster
 
     // version is a date in DateHour format (uint32 representing number of hours since 2025-01-01)
     async function getTile(_version, z, x, y, signal) {
@@ -835,10 +782,14 @@
     const _initialView = getInitialViewFromUrl();
     const map = new maplibregl.Map({
       container: 'map',
-      style: getMapStyle(wplaceVersion),
+      style: getMapStyle(wplaceVersion, basemapType),
       center: _initialView.center,
       zoom: _initialView.zoom
     });
+
+    function setMapVersion(version) {
+      map.setStyle(getMapStyle(version, basemapType));
+    }
 
     // Display and update zoom level
     const zoomDiv = document.getElementById('zoom-level');
@@ -849,7 +800,9 @@
       }
     }
     map.on('zoom', updateZoom);
-    map.on('load', updateZoom);
+    map.on('load', function() {
+      updateZoom();
+    });
 
     // Update URL when the map stops moving and keep inputs in sync
     map.on('moveend', function() {
@@ -873,7 +826,7 @@
       const idx = parseInt(e.target.value);
       wplaceVersion = WPLACE_VERSIONS[idx].version;
       updateVersionLabel(idx);
-      map.setStyle(getMapStyle(wplaceVersion));
+      setMapVersion(wplaceVersion);
       // after the style is applied, update zoom display and the url (so version is saved)
       map.once('styledata', function() { updateZoom(); try { updateUrlWithMapView(map); } catch (e) { console.error(e)} });
     });
@@ -1177,7 +1130,7 @@
     function switchMapToVersion(version) {
       if (exportParams.savedVersion === null) exportParams.savedVersion = wplaceVersion;
       wplaceVersion = version;
-      map.setStyle(getMapStyle(version));
+      setMapVersion(version);
       const idx = WPLACE_VERSIONS.findIndex(v => v.version === version);
       if (idx >= 0) {
         versionSlider.value = idx;
@@ -1191,7 +1144,7 @@
       if (exportParams.savedVersion === null) return;
       wplaceVersion = exportParams.savedVersion;
       exportParams.savedVersion = null;
-      map.setStyle(getMapStyle(wplaceVersion));
+      setMapVersion(wplaceVersion);
       const idx = WPLACE_VERSIONS.findIndex(v => v.version === wplaceVersion);
       if (idx >= 0) {
         versionSlider.value = idx;

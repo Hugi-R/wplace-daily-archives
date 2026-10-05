@@ -707,6 +707,7 @@
             maxzoom: 22,
             paint: {
               "raster-fade-duration": 0,
+              "raster-opacity-transition": { duration: 0 },
               "raster-resampling": "nearest"
             }
           }
@@ -868,14 +869,39 @@
       }
     });
 
+    // Load the new version in a hidden layer, and swap it in once loaded to avoid flashing
+    let wplaceLayer = 'wplace';
+    let pendingLayer = null;
+    let layerCount = 0;
+    function setWplaceVersion(version) {
+      if (pendingLayer) {
+        map.removeLayer(pendingLayer);
+        map.removeSource(pendingLayer);
+      }
+      const id = pendingLayer = `wplace-${++layerCount}`;
+      const { sources, layers } = getMapStyle(version);
+      map.addSource(id, sources.wplace);
+      map.addLayer({ ...layers[1], id, source: id, paint: { ...layers[1].paint, 'raster-opacity': 0 } });
+      const swap = function(e) {
+        if (pendingLayer !== id) return map.off('sourcedata', swap).off('error', swap);
+        if (e.sourceId !== id || !(e.tile || e.type === 'error') || !map.isSourceLoaded(id)) return;
+        map.off('sourcedata', swap).off('error', swap);
+        map.setPaintProperty(id, 'raster-opacity', map.getPaintProperty(wplaceLayer, 'raster-opacity') ?? 1);
+        map.removeLayer(wplaceLayer);
+        map.removeSource(wplaceLayer);
+        wplaceLayer = id;
+        pendingLayer = null;
+      };
+      map.on('sourcedata', swap).on('error', swap);
+    }
+
     // Handle version slider change
     versionSlider.addEventListener('input', function(e) {
       const idx = parseInt(e.target.value);
       wplaceVersion = WPLACE_VERSIONS[idx].version;
       updateVersionLabel(idx);
-      map.setStyle(getMapStyle(wplaceVersion));
-      // after the style is applied, update zoom display and the url (so version is saved)
-      map.once('styledata', function() { updateZoom(); try { updateUrlWithMapView(map); } catch (e) { console.error(e)} });
+      setWplaceVersion(wplaceVersion);
+      try { updateUrlWithMapView(map); } catch (e) { console.error(e) }
     });
 
     // --- Custom Right-Click Menu ---
@@ -1177,7 +1203,7 @@
     function switchMapToVersion(version) {
       if (exportParams.savedVersion === null) exportParams.savedVersion = wplaceVersion;
       wplaceVersion = version;
-      map.setStyle(getMapStyle(version));
+      setWplaceVersion(version);
       const idx = WPLACE_VERSIONS.findIndex(v => v.version === version);
       if (idx >= 0) {
         versionSlider.value = idx;
@@ -1191,7 +1217,7 @@
       if (exportParams.savedVersion === null) return;
       wplaceVersion = exportParams.savedVersion;
       exportParams.savedVersion = null;
-      map.setStyle(getMapStyle(wplaceVersion));
+      setWplaceVersion(wplaceVersion);
       const idx = WPLACE_VERSIONS.findIndex(v => v.version === wplaceVersion);
       if (idx >= 0) {
         versionSlider.value = idx;
@@ -1466,10 +1492,9 @@
       let isTransparent = false;
 
       transparencyButton.addEventListener('click', function() {
-        const wplaceLayer = map.getLayer('wplace');
-        if (wplaceLayer) {
+        if (map.getLayer(wplaceLayer)) {
           isTransparent = !isTransparent;
-          map.setPaintProperty('wplace', 'raster-opacity', isTransparent ? 0.3 : 1);
+          map.setPaintProperty(wplaceLayer, 'raster-opacity', isTransparent ? 0.3 : 1);
           transparencyButton.classList.toggle('toggled', isTransparent);
         }
       });

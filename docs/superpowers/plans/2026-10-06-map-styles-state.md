@@ -26,8 +26,8 @@
 - `frontend/assets/map-styles.js` (modify, lines 1-9 head + 51-64 raster paint + 6110-6124 vector paint): owns `WplaceMapState`, `resetWplaceState`, `initWplaceStateFromUrl`, `getWplaceLayerDef`, `getWplaceOpacity`, `setWplaceTransparency`, `setWplaceVersion`. Single home for all version-swap logic.
 - `frontend/assets/map-styles.test.js` (create): colocated unit tests with mock map; only test file in the repo.
 - `frontend/index.html` (modify, lines 450, 660-662, 790-792, 824-832, 1130-1154, 1417-1429): thin calls into the state module; no swap logic remains.
-- `frontend/package.json` (create): `{"type":"module","scripts":{"test":"node --test assets/"}}` so `npm test` works; no dependencies.
-- `.github/workflows/frontend-js.yml` (create): CI runs `node --test frontend/assets/` on Node 24.
+- `frontend/package.json` (create): `{"type":"module","scripts":{"test":"node --test \"assets/**/*.test.js\""}}` so `npm test` works; no dependencies.
+- `.github/workflows/frontend-js.yml` (create): CI runs `node --test "frontend/assets/**/*.test.js"` on Node 24.
 
 ---
 
@@ -754,7 +754,7 @@ to:
 
 - [ ] **Step 4: Run checks to verify it passes**
 
-Run: `node --test frontend/assets/` (unit suite still green) plus manual:
+Run: `node --test frontend/assets/map-styles.test.js` (unit suite still green) plus manual:
 1. Drag slider fast → no white flash, final art matches slider.
 2. Reload with `?layerswap=old` → flash returns (old path); remove param → no flash.
 3. Toggle transparency mid-load → opacity sticks after swap.
@@ -802,7 +802,7 @@ Create `frontend/package.json` with exact content:
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test assets/"
+    "test": "node --test \"assets/**/*.test.js\""
   }
 }
 ```
@@ -820,13 +820,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: node --test frontend/assets/
+      - run: node --test "frontend/assets/**/*.test.js"
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npm test --prefix frontend`
-Expected: PASS, 14 tests passing. Then run: `node --test frontend/assets/`
+Expected: PASS, 14 tests passing. Then run: `node --test "frontend/assets/**/*.test.js"`
 Expected: PASS, same count.
 
 - [ ] **Step 5: Commit**

@@ -98,7 +98,7 @@ describe('setWplaceVersion reload', () => {
 });
 
 describe('setWplaceVersion swap', () => {
-  beforeEach(() => { resetWplaceState(); });
+  beforeEach(() => { resetWplaceState(); WplaceMapState.basemapType = 'raster'; });
 
   function seededMap() {
     const map = createMockMap();
@@ -160,7 +160,7 @@ describe('setWplaceVersion swap', () => {
 import { setWplaceTransparency, getWplaceOpacity } from './map-styles.js';
 
 describe('transparency', () => {
-  beforeEach(() => { resetWplaceState(); });
+  beforeEach(() => { resetWplaceState(); WplaceMapState.basemapType = 'raster'; });
 
   it('toggles current layer opacity and records flag', () => {
     const map = createMockMap();

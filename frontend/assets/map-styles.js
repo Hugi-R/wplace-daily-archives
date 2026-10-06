@@ -52,9 +52,10 @@ export function getWplaceLayerDef(version, basemapType) {
 export function setWplaceVersion(map, version, opts = {}) {
   const basemapType = opts.basemapType ?? WplaceMapState.basemapType;
   const strategy = opts.strategy ?? WplaceMapState.strategy;
+  const prevBasemap = WplaceMapState.basemapType;
   WplaceMapState.version = version;
   WplaceMapState.basemapType = basemapType;
-  if (strategy === 'reload') {
+  if (strategy === 'reload' || basemapType !== prevBasemap) {
     map.setStyle(getMapStyle(version, basemapType));
     return new Promise((resolve) => {
       map.once('styledata', () => {
@@ -86,7 +87,7 @@ function setWplaceVersionSwap(map, version, basemapType) {
   const id = `wplace-${++WplaceMapState.layerCount}`;
   WplaceMapState.pendingLayerId = id;
   const style = getMapStyle(version, basemapType);
-  const def = style.layers.find((l) => l.id === 'wplace');
+  const def = getWplaceLayerDef(version, basemapType);
   map.addSource(id, style.sources.wplace);
   map.addLayer({ ...def, id, source: id, paint: { ...def.paint, 'raster-opacity': 0 } });
   return new Promise((resolve, reject) => {

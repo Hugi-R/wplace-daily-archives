@@ -1420,7 +1420,6 @@
       const transparencyButton = document.getElementById('toggle-transparency');
 
       transparencyButton.addEventListener('click', function() {
-        if (!map.getLayer(WplaceMapState.currentLayerId)) return;
         setWplaceTransparency(map, !WplaceMapState.isTransparent);
         transparencyButton.classList.toggle('toggled', WplaceMapState.isTransparent);
       });

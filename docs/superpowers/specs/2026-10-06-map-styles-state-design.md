@@ -33,7 +33,7 @@ export const WplaceMapState = {
   isTransparent: false,     // desired art opacity flag
 };
 export function resetWplaceState()          // restore defaults (tests/init)
-export function initWplaceStateFromUrl(search) // ?layerswap=old|new, ?basemap=
+export function initWplaceStateFromUrl(search) // ?layerswap=old|reload|new|swap, ?basemap=
 ```
 
 ### Pure helpers (kept, fixed)

@@ -8,6 +8,46 @@ export function getMapStyle(version, basemapType) {
     }
 }
 
+export const WplaceMapState = {
+  version: null,
+  basemapType: 'vector',
+  strategy: 'swap',
+  currentLayerId: 'wplace',
+  pendingLayerId: null,
+  layerCount: 0,
+  isTransparent: false,
+};
+
+export function resetWplaceState() {
+  WplaceMapState.version = null;
+  WplaceMapState.basemapType = 'vector';
+  WplaceMapState.strategy = 'swap';
+  WplaceMapState.currentLayerId = 'wplace';
+  WplaceMapState.pendingLayerId = null;
+  WplaceMapState.layerCount = 0;
+  WplaceMapState.isTransparent = false;
+}
+
+export function initWplaceStateFromUrl(search) {
+  WplaceMapState.strategy = 'swap';
+  WplaceMapState.basemapType = 'vector';
+  const s = search ?? (typeof window !== 'undefined' ? window.location.search : '');
+  const p = new URLSearchParams(s);
+  const ls = (p.get('layerswap') || '').toLowerCase();
+  if (ls === 'old' || ls === 'reload') WplaceMapState.strategy = 'reload';
+  else if (ls === 'new' || ls === 'swap') WplaceMapState.strategy = 'swap';
+  const bm = (p.get('basemap') || '').toLowerCase();
+  if (bm === 'raster' || bm === 'vector') WplaceMapState.basemapType = bm;
+  return WplaceMapState;
+}
+
+export function getWplaceLayerDef(version, basemapType) {
+  const style = getMapStyle(version, basemapType);
+  const def = style.layers.find((l) => l.id === 'wplace');
+  if (!def) throw new Error('wplace layer missing in style');
+  return def;
+}
+
 // Function to get wplace tile URL for selected version
 function getWplaceTileUrl(version) {
     return `merged://tiles/${version}/{z}/{x}/{y}.png`;
@@ -56,6 +96,7 @@ function getMapStyleRaster(version) {
         maxzoom: 22,
         paint: {
             "raster-fade-duration": 0,
+            "raster-opacity-transition": { duration: 0 },
             "raster-resampling": "nearest"
         }
         }
@@ -6115,6 +6156,7 @@ function getMapStyleVector(version) {
             "maxzoom": 22,
             "paint": {
             "raster-fade-duration": 0,
+            "raster-opacity-transition": { duration: 0 },
             "raster-resampling": "nearest"
             }
         }

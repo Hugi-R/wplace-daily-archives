@@ -66,12 +66,21 @@ export function setWplaceVersion(map, version, opts = {}) {
   return setWplaceVersionSwap(map, version, basemapType);
 }
 
+let pendingSwap = null;
+
 function setWplaceVersionSwap(map, version, basemapType) {
   if (WplaceMapState.pendingLayerId) {
     const stale = WplaceMapState.pendingLayerId;
     WplaceMapState.pendingLayerId = null;
     try { if (map.getLayer(stale)) map.removeLayer(stale); } catch {}
     try { if (map.getSource(stale)) map.removeSource(stale); } catch {}
+    if (pendingSwap) {
+      const prev = pendingSwap;
+      pendingSwap = null;
+      try { map.off('sourcedata', prev.swap); } catch {}
+      try { map.off('error', prev.swap); } catch {}
+      prev.reject(new Error('superseded'));
+    }
   }
   const id = `wplace-${++WplaceMapState.layerCount}`;
   WplaceMapState.pendingLayerId = id;
@@ -84,6 +93,9 @@ function setWplaceVersionSwap(map, version, basemapType) {
       if (WplaceMapState.pendingLayerId !== id) {
         map.off('sourcedata', swap);
         map.off('error', swap);
+        try { if (map.getLayer(id)) map.removeLayer(id); } catch {}
+        try { if (map.getSource(id)) map.removeSource(id); } catch {}
+        if (pendingSwap && pendingSwap.id === id) pendingSwap = null;
         reject(new Error('superseded'));
         return;
       }
@@ -105,8 +117,10 @@ function setWplaceVersionSwap(map, version, basemapType) {
       WplaceMapState.pendingLayerId = null;
       try { if (map.getLayer(old)) map.removeLayer(old); } catch {}
       try { if (map.getSource(old)) map.removeSource(old); } catch {}
+      if (pendingSwap && pendingSwap.id === id) pendingSwap = null;
       resolve();
     };
+    pendingSwap = { id, swap, reject };
     map.on('sourcedata', swap);
     map.on('error', swap);
   });

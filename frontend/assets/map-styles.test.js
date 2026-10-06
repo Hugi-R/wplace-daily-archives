@@ -96,3 +96,64 @@ describe('setWplaceVersion reload', () => {
     assert.equal(WplaceMapState.pendingLayerId, null);
   });
 });
+
+describe('setWplaceVersion swap', () => {
+  beforeEach(() => { resetWplaceState(); });
+
+  function seededMap() {
+    const map = createMockMap();
+    map.addSource('wplace', { type: 'raster', tiles: ['old'] });
+    map.addLayer({ id: 'wplace', type: 'raster', source: 'wplace', paint: {} });
+    map.setPaintProperty('wplace', 'raster-opacity', 1);
+    return map;
+  }
+
+  it('adds hidden layer and promotes on sourcedata', async () => {
+    const map = seededMap();
+    const p = setWplaceVersion(map, 'v99', { basemapType: 'raster' });
+    assert.equal(WplaceMapState.pendingLayerId, 'wplace-1');
+    assert.equal(map.getPaintProperty('wplace-1', 'raster-opacity'), undefined);
+    const hidden = map.getLayer('wplace-1');
+    assert.equal(hidden.paint['raster-opacity'], 0);
+    map.fire('sourcedata', { sourceId: 'wplace-1', tile: {} });
+    await p;
+    assert.equal(WplaceMapState.currentLayerId, 'wplace-1');
+    assert.equal(WplaceMapState.pendingLayerId, null);
+    assert.equal(map.getLayer('wplace'), null);
+    assert.equal(map.getPaintProperty('wplace-1', 'raster-opacity'), 1);
+  });
+
+  it('ignores other sources and unloaded sources', async () => {
+    const map = seededMap();
+    let settled = false;
+    const p = setWplaceVersion(map, 'v99', { basemapType: 'raster' }).then(() => { settled = true; });
+    map.fire('sourcedata', { sourceId: 'other', tile: {} });
+    assert.equal(settled, false);
+    assert.equal(WplaceMapState.pendingLayerId, 'wplace-1');
+    map.fire('sourcedata', { sourceId: 'wplace-1', tile: {} });
+    await p;
+    assert.equal(settled, true);
+  });
+
+  it('cancels prior pending on rapid calls', async () => {
+    const map = seededMap();
+    const p1 = setWplaceVersion(map, 'v1', { basemapType: 'raster' });
+    const p2 = setWplaceVersion(map, 'v2', { basemapType: 'raster' });
+    assert.equal(map.getLayer('wplace-1'), null);
+    assert.equal(WplaceMapState.pendingLayerId, 'wplace-2');
+    await assert.rejects(p1, /superseded/);
+    map.fire('sourcedata', { sourceId: 'wplace-1', tile: {} });
+    assert.equal(WplaceMapState.currentLayerId, 'wplace');
+    map.fire('sourcedata', { sourceId: 'wplace-2', tile: {} });
+    await p2;
+    assert.equal(WplaceMapState.currentLayerId, 'wplace-2');
+  });
+
+  it('promotes on error so the promise always settles', async () => {
+    const map = seededMap();
+    const p = setWplaceVersion(map, 'vX', { basemapType: 'raster' });
+    map.fire('error', { type: 'error', sourceId: 'wplace-1' });
+    await p;
+    assert.equal(WplaceMapState.currentLayerId, 'wplace-1');
+  });
+});

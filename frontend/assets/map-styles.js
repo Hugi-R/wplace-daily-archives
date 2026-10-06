@@ -61,6 +61,11 @@ export function setWplaceVersion(map, version, opts = {}) {
       map.once('styledata', () => {
         WplaceMapState.currentLayerId = 'wplace';
         WplaceMapState.pendingLayerId = null;
+        try {
+          if (map.getLayer('wplace')) {
+            map.setPaintProperty('wplace', 'raster-opacity', WplaceMapState.isTransparent ? 0.3 : 1);
+          }
+        } catch {}
         resolve();
       });
     });
@@ -157,6 +162,7 @@ function getMapStyleRaster(version) {
         ],
         minzoom: 0,
         maxzoom: 11,
+        tileSize: 1000,
         attribution: '© wplace.live'
         }
     },
@@ -177,7 +183,6 @@ function getMapStyleRaster(version) {
         paint: {
             "raster-fade-duration": 0,
             "raster-opacity-transition": { duration: 0 },
-            "raster-resampling": "nearest"
         }
         }
     ]
@@ -197,6 +202,7 @@ function getMapStyleVector(version) {
             ],
             "minzoom": 0,
             "maxzoom": 11,
+            "tileSize": 1000,
             "attribution": '© wplace.live'
         },
         "ne2_shaded": {
@@ -6237,7 +6243,6 @@ function getMapStyleVector(version) {
             "paint": {
             "raster-fade-duration": 0,
             "raster-opacity-transition": { duration: 0 },
-            "raster-resampling": "nearest"
             }
         }
     ]

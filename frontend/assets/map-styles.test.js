@@ -197,4 +197,19 @@ describe('transparency', () => {
     await p;
     assert.equal(map.getPaintProperty('wplace-1', 'raster-opacity'), 0.3);
   });
+
+  it('reapplies transparency after reload strategy styledata', async () => {
+    const map = createMockMap();
+    map.addSource('wplace', { type: 'raster', tiles: ['old'] });
+    map.addLayer({ id: 'wplace', type: 'raster', source: 'wplace', paint: {} });
+    // Real setStyle discards all layers/paint; simulate by clearing paint on setStyle.
+    const origSetStyle = map.setStyle.bind(map);
+    map.setStyle = (s) => { map._paint.clear(); origSetStyle(s); };
+    WplaceMapState.strategy = 'reload';
+    setWplaceTransparency(map, true);
+    const p = setWplaceVersion(map, 'vR', { basemapType: 'raster' });
+    map.fire('styledata', {});
+    await p;
+    assert.equal(map.getPaintProperty('wplace', 'raster-opacity'), 0.3);
+  });
 });

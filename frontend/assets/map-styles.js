@@ -48,6 +48,70 @@ export function getWplaceLayerDef(version, basemapType) {
   return def;
 }
 
+export function setWplaceVersion(map, version, opts = {}) {
+  const basemapType = opts.basemapType ?? WplaceMapState.basemapType;
+  const strategy = opts.strategy ?? WplaceMapState.strategy;
+  WplaceMapState.version = version;
+  WplaceMapState.basemapType = basemapType;
+  if (strategy === 'reload') {
+    map.setStyle(getMapStyle(version, basemapType));
+    return new Promise((resolve) => {
+      map.once('styledata', () => {
+        WplaceMapState.currentLayerId = 'wplace';
+        WplaceMapState.pendingLayerId = null;
+        resolve();
+      });
+    });
+  }
+  return setWplaceVersionSwap(map, version, basemapType);
+}
+
+function setWplaceVersionSwap(map, version, basemapType) {
+  if (WplaceMapState.pendingLayerId) {
+    const stale = WplaceMapState.pendingLayerId;
+    WplaceMapState.pendingLayerId = null;
+    try { if (map.getLayer(stale)) map.removeLayer(stale); } catch {}
+    try { if (map.getSource(stale)) map.removeSource(stale); } catch {}
+  }
+  const id = `wplace-${++WplaceMapState.layerCount}`;
+  WplaceMapState.pendingLayerId = id;
+  const style = getMapStyle(version, basemapType);
+  const def = style.layers.find((l) => l.id === 'wplace');
+  map.addSource(id, style.sources.wplace);
+  map.addLayer({ ...def, id, source: id, paint: { ...def.paint, 'raster-opacity': 0 } });
+  return new Promise((resolve, reject) => {
+    const swap = function (e) {
+      if (WplaceMapState.pendingLayerId !== id) {
+        map.off('sourcedata', swap);
+        map.off('error', swap);
+        reject(new Error('superseded'));
+        return;
+      }
+      const isErr = !e || e.type === 'error';
+      const srcOk = !e || e.sourceId === undefined || e.sourceId === id;
+      const dataOk = isErr || !!e.tile;
+      if (!srcOk || !dataOk) return;
+      if (!isErr && !map.isSourceLoaded(id)) return;
+      map.off('sourcedata', swap);
+      map.off('error', swap);
+      let opacity = WplaceMapState.isTransparent ? 0.3 : 1;
+      try {
+        const v = map.getPaintProperty(WplaceMapState.currentLayerId, 'raster-opacity');
+        if (v !== undefined && v !== null) opacity = v;
+      } catch {}
+      try { map.setPaintProperty(id, 'raster-opacity', opacity); } catch {}
+      const old = WplaceMapState.currentLayerId;
+      WplaceMapState.currentLayerId = id;
+      WplaceMapState.pendingLayerId = null;
+      try { if (map.getLayer(old)) map.removeLayer(old); } catch {}
+      try { if (map.getSource(old)) map.removeSource(old); } catch {}
+      resolve();
+    };
+    map.on('sourcedata', swap);
+    map.on('error', swap);
+  });
+}
+
 // Function to get wplace tile URL for selected version
 function getWplaceTileUrl(version) {
     return `merged://tiles/${version}/{z}/{x}/{y}.png`;

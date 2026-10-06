@@ -157,3 +157,44 @@ describe('setWplaceVersion swap', () => {
     assert.equal(WplaceMapState.currentLayerId, 'wplace-1');
   });
 });
+import { setWplaceTransparency, getWplaceOpacity } from './map-styles.js';
+
+describe('transparency', () => {
+  beforeEach(() => { resetWplaceState(); });
+
+  it('toggles current layer opacity and records flag', () => {
+    const map = createMockMap();
+    map.addSource('wplace', { type: 'raster', tiles: ['old'] });
+    map.addLayer({ id: 'wplace', type: 'raster', source: 'wplace', paint: {} });
+    setWplaceTransparency(map, true);
+    assert.equal(WplaceMapState.isTransparent, true);
+    assert.equal(map.getPaintProperty('wplace', 'raster-opacity'), 0.3);
+    setWplaceTransparency(map, false);
+    assert.equal(map.getPaintProperty('wplace', 'raster-opacity'), 1);
+  });
+
+  it('preserves transparent opacity across swap', async () => {
+    const map = createMockMap();
+    map.addSource('wplace', { type: 'raster', tiles: ['old'] });
+    map.addLayer({ id: 'wplace', type: 'raster', source: 'wplace', paint: {} });
+    setWplaceTransparency(map, true);
+    const p = setWplaceVersion(map, 'vT', { basemapType: 'raster' });
+    map.fire('sourcedata', { sourceId: 'wplace-1', tile: {} });
+    await p;
+    assert.equal(map.getPaintProperty('wplace-1', 'raster-opacity'), 0.3);
+    assert.equal(getWplaceOpacity(map), 0.3);
+  });
+
+  it('mid-load toggle sticks after promote', async () => {
+    const map = createMockMap();
+    map.addSource('wplace', { type: 'raster', tiles: ['old'] });
+    map.addLayer({ id: 'wplace', type: 'raster', source: 'wplace', paint: {} });
+    map.setPaintProperty('wplace', 'raster-opacity', 1);
+    const p = setWplaceVersion(map, 'vT', { basemapType: 'raster' });
+    setWplaceTransparency(map, true);
+    assert.equal(map.getPaintProperty('wplace-1', 'raster-opacity'), 0.3);
+    map.fire('sourcedata', { sourceId: 'wplace-1', tile: {} });
+    await p;
+    assert.equal(map.getPaintProperty('wplace-1', 'raster-opacity'), 0.3);
+  });
+});

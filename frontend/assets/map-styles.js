@@ -26,6 +26,7 @@ export function resetWplaceState() {
   WplaceMapState.pendingLayerId = null;
   WplaceMapState.layerCount = 0;
   WplaceMapState.isTransparent = false;
+  pendingSwap = null;
 }
 
 export function initWplaceStateFromUrl(search) {
@@ -6241,4 +6242,26 @@ function getMapStyleVector(version) {
     ]
 }
     return style;  
+}
+
+export function getWplaceOpacity(map) {
+  try {
+    const v = map.getPaintProperty(WplaceMapState.currentLayerId, 'raster-opacity');
+    if (v !== undefined && v !== null) return v;
+  } catch {}
+  return WplaceMapState.isTransparent ? 0.3 : 1;
+}
+
+export function setWplaceTransparency(map, transparent) {
+  WplaceMapState.isTransparent = transparent;
+  const opacity = transparent ? 0.3 : 1;
+  try {
+    if (map.getLayer(WplaceMapState.currentLayerId)) {
+      map.setPaintProperty(WplaceMapState.currentLayerId, 'raster-opacity', opacity);
+    }
+  } catch {}
+  try {
+    const p = WplaceMapState.pendingLayerId;
+    if (p && map.getLayer(p)) map.setPaintProperty(p, 'raster-opacity', opacity);
+  } catch {}
 }

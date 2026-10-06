@@ -447,7 +447,7 @@
 
   <script type="module">
     import * as maplibregl from 'https://unpkg.com/maplibre-gl@^6.4.1/dist/maplibre-gl.mjs';
-    import {getMapStyle} from '/assets/map-styles.js';
+    import {getMapStyle, WplaceMapState, initWplaceStateFromUrl, setWplaceVersion, setWplaceTransparency} from '/assets/map-styles.js';
     var wasmModule = null;
 
     //$$I18N_DICT$$
@@ -659,7 +659,9 @@
     }
     updateVersionLabel(versionSlider.value);
     let wplaceVersion = WPLACE_VERSIONS[versionSlider.value].version;
-    let basemapType = 'vector'; // Can be vector or raster
+    initWplaceStateFromUrl(window.location.search);
+    let basemapType = WplaceMapState.basemapType;
+    WplaceMapState.version = wplaceVersion;
 
     // version is a date in DateHour format (uint32 representing number of hours since 2025-01-01)
     async function getTile(_version, z, x, y, signal) {
@@ -788,7 +790,7 @@
     });
 
     function setMapVersion(version) {
-      map.setStyle(getMapStyle(version, basemapType));
+      return setWplaceVersion(map, version);
     }
 
     // Display and update zoom level
@@ -826,9 +828,10 @@
       const idx = parseInt(e.target.value);
       wplaceVersion = WPLACE_VERSIONS[idx].version;
       updateVersionLabel(idx);
-      setMapVersion(wplaceVersion);
-      // after the style is applied, update zoom display and the url (so version is saved)
-      map.once('styledata', function() { updateZoom(); try { updateUrlWithMapView(map); } catch (e) { console.error(e)} });
+      setMapVersion(wplaceVersion).catch(() => {}).finally(function() {
+        updateZoom();
+        try { updateUrlWithMapView(map); } catch (err) { console.error(err); }
+      });
     });
 
     // --- Custom Right-Click Menu ---
@@ -1130,21 +1133,20 @@
     function switchMapToVersion(version) {
       if (exportParams.savedVersion === null) exportParams.savedVersion = wplaceVersion;
       wplaceVersion = version;
-      setMapVersion(version);
+      setMapVersion(version).catch(() => {}).finally(drawExportOverlay);
       const idx = WPLACE_VERSIONS.findIndex(v => v.version === version);
       if (idx >= 0) {
         versionSlider.value = idx;
         updateVersionLabel(idx);
       }
       try { updateUrlWithMapView(map); } catch (e) { console.error(e); }
-      map.once('styledata', drawExportOverlay);
     }
 
     function restoreSavedMapVersion() {
       if (exportParams.savedVersion === null) return;
       wplaceVersion = exportParams.savedVersion;
       exportParams.savedVersion = null;
-      setMapVersion(wplaceVersion);
+      setMapVersion(wplaceVersion).catch(() => {});
       const idx = WPLACE_VERSIONS.findIndex(v => v.version === wplaceVersion);
       if (idx >= 0) {
         versionSlider.value = idx;
@@ -1416,15 +1418,11 @@
     // --- Transparency Toggle ---
     document.addEventListener('DOMContentLoaded', function() {
       const transparencyButton = document.getElementById('toggle-transparency');
-      let isTransparent = false;
 
       transparencyButton.addEventListener('click', function() {
-        const wplaceLayer = map.getLayer('wplace');
-        if (wplaceLayer) {
-          isTransparent = !isTransparent;
-          map.setPaintProperty('wplace', 'raster-opacity', isTransparent ? 0.3 : 1);
-          transparencyButton.classList.toggle('toggled', isTransparent);
-        }
+        if (!map.getLayer(WplaceMapState.currentLayerId)) return;
+        setWplaceTransparency(map, !WplaceMapState.isTransparent);
+        transparencyButton.classList.toggle('toggled', WplaceMapState.isTransparent);
       });
     });
 

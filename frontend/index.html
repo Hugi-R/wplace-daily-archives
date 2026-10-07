@@ -18,7 +18,7 @@
   <meta name="twitter:description" content="{{t:meta_description}}">
   <meta name="twitter:image" content="/preview.png">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet" />
   <style>
     :root {
       /* Primary UI colors */
@@ -445,8 +445,8 @@
     </button>
   </div>
 
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
   <script type="module">
-    import * as maplibregl from 'https://unpkg.com/maplibre-gl@^6.4.1/dist/maplibre-gl.mjs';
     import {getMapStyle, WplaceMapState, initWplaceStateFromUrl, setWplaceVersion, setWplaceTransparency} from '/assets/map-styles.js';
     var wasmModule = null;
 

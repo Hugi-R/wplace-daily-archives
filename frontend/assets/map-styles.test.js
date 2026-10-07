@@ -223,8 +223,8 @@ describe('supersampling', () => {
     assert.equal(wplaceTileSize(), 500);
   });
 
-  it('maps x1-x8 to tileSize in both basemaps', () => {
-    const expected = { 1: 1000, 2: 500, 3: 333, 4: 250, 5: 200, 6: 167, 7: 143, 8: 125 };
+  it('maps x1, x2, x4, x8 to tileSize in both basemaps', () => {
+    const expected = { 1: 1000, 2: 500, 4: 250, 8: 125 };
     for (const [s, ts] of Object.entries(expected)) {
       assert.equal(wplaceTileSize(Number(s)), ts, `x${s}`);
       for (const bm of ['raster', 'vector']) {
@@ -234,18 +234,24 @@ describe('supersampling', () => {
     }
   });
 
-  it('clamps and rounds out-of-range values', () => {
+  it('snaps off-list values to nearest level, ties down', () => {
     assert.equal(wplaceTileSize(0), 1000);
     assert.equal(wplaceTileSize(9), 125);
-    assert.equal(wplaceTileSize(2.7), 333);
+    assert.equal(wplaceTileSize(2.7), 500);
+    assert.equal(wplaceTileSize(3), 500);
+    assert.equal(wplaceTileSize(5), 250);
+    assert.equal(wplaceTileSize(6), 250);
+    assert.equal(wplaceTileSize(7), 125);
     assert.equal(wplaceTileSize('abc'), 500);
   });
 
-  it('parses ?supersampling= and ignores invalid values', () => {
+  it('parses ?supersampling= and ignores non-numeric values', () => {
     initWplaceStateFromUrl('?supersampling=4');
     assert.equal(WplaceMapState.supersampling, 4);
     assert.equal(wplaceTileSize(), 250);
     initWplaceStateFromUrl('?supersampling=99');
+    assert.equal(WplaceMapState.supersampling, 8);
+    initWplaceStateFromUrl('?supersampling=3');
     assert.equal(WplaceMapState.supersampling, 2);
     initWplaceStateFromUrl('?supersampling=abc');
     assert.equal(WplaceMapState.supersampling, 2);

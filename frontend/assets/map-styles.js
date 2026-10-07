@@ -10,14 +10,20 @@ export function getMapStyle(version, basemapType, supersampling = WplaceMapState
 
 export const WPLACE_TILE_PIXELS = 1000;
 
-export function clampSupersampling(s) {
+const SUPERSAMPLING_LEVELS = [1, 2, 4, 8];
+
+export function snapSupersampling(s) {
   const n = Math.round(Number(s));
   if (!Number.isFinite(n)) return WplaceMapState.supersampling;
-  return Math.min(8, Math.max(1, n));
+  let best = SUPERSAMPLING_LEVELS[0];
+  for (const l of SUPERSAMPLING_LEVELS) {
+    if (Math.abs(n - l) < Math.abs(n - best)) best = l;
+  }
+  return best;
 }
 
 export function wplaceTileSize(s = WplaceMapState.supersampling) {
-  return Math.round(WPLACE_TILE_PIXELS / clampSupersampling(s));
+  return Math.round(WPLACE_TILE_PIXELS / snapSupersampling(s));
 }
 
 export const WplaceMapState = {
@@ -55,10 +61,7 @@ export function initWplaceStateFromUrl(search) {
   const bm = (p.get('basemap') || '').toLowerCase();
   if (bm === 'raster' || bm === 'vector') WplaceMapState.basemapType = bm;
   const ss = p.get('supersampling');
-  if (ss !== null) {
-    const n = Math.round(Number(ss));
-    if (Number.isFinite(n) && n >= 1 && n <= 8) WplaceMapState.supersampling = n;
-  }
+  if (ss !== null) WplaceMapState.supersampling = snapSupersampling(ss);
   return WplaceMapState;
 }
 
@@ -72,7 +75,7 @@ export function getWplaceLayerDef(version, basemapType, supersampling = WplaceMa
 export function setWplaceVersion(map, version, opts = {}) {
   const basemapType = opts.basemapType ?? WplaceMapState.basemapType;
   const strategy = opts.strategy ?? WplaceMapState.strategy;
-  const supersampling = clampSupersampling(opts.supersampling ?? WplaceMapState.supersampling);
+  const supersampling = snapSupersampling(opts.supersampling ?? WplaceMapState.supersampling);
   const prevBasemap = WplaceMapState.basemapType;
   const prevSupersampling = WplaceMapState.supersampling;
   WplaceMapState.version = version;

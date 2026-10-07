@@ -1,11 +1,23 @@
-export function getMapStyle(version, basemapType) {
+export function getMapStyle(version, basemapType, supersampling = WplaceMapState.supersampling) {
     if (basemapType === 'raster') {
-        return getMapStyleRaster(version);
+        return getMapStyleRaster(version, supersampling);
     } else if (basemapType === 'vector') {
-        return getMapStyleVector(version);
+        return getMapStyleVector(version, supersampling);
     } else {
         throw new Error(`Invalid basemap type: ${basemapType}`);
     }
+}
+
+export const WPLACE_TILE_PIXELS = 1000;
+
+export function clampSupersampling(s) {
+  const n = Math.round(Number(s));
+  if (!Number.isFinite(n)) return WplaceMapState.supersampling;
+  return Math.min(8, Math.max(1, n));
+}
+
+export function wplaceTileSize(s = WplaceMapState.supersampling) {
+  return Math.round(WPLACE_TILE_PIXELS / clampSupersampling(s));
 }
 
 export const WplaceMapState = {
@@ -16,6 +28,7 @@ export const WplaceMapState = {
   pendingLayerId: null,
   layerCount: 0,
   isTransparent: false,
+  supersampling: 2,
 };
 
 export function resetWplaceState() {
@@ -26,12 +39,14 @@ export function resetWplaceState() {
   WplaceMapState.pendingLayerId = null;
   WplaceMapState.layerCount = 0;
   WplaceMapState.isTransparent = false;
+  WplaceMapState.supersampling = 2;
   pendingSwap = null;
 }
 
 export function initWplaceStateFromUrl(search) {
   WplaceMapState.strategy = 'swap';
   WplaceMapState.basemapType = 'vector';
+  WplaceMapState.supersampling = 2;
   const s = search ?? (typeof window !== 'undefined' ? window.location.search : '');
   const p = new URLSearchParams(s);
   const ls = (p.get('layerswap') || '').toLowerCase();
@@ -39,11 +54,16 @@ export function initWplaceStateFromUrl(search) {
   else if (ls === 'new' || ls === 'swap') WplaceMapState.strategy = 'swap';
   const bm = (p.get('basemap') || '').toLowerCase();
   if (bm === 'raster' || bm === 'vector') WplaceMapState.basemapType = bm;
+  const ss = p.get('supersampling');
+  if (ss !== null) {
+    const n = Math.round(Number(ss));
+    if (Number.isFinite(n) && n >= 1 && n <= 8) WplaceMapState.supersampling = n;
+  }
   return WplaceMapState;
 }
 
-export function getWplaceLayerDef(version, basemapType) {
-  const style = getMapStyle(version, basemapType);
+export function getWplaceLayerDef(version, basemapType, supersampling = WplaceMapState.supersampling) {
+  const style = getMapStyle(version, basemapType, supersampling);
   const def = style.layers.find((l) => l.id === 'wplace');
   if (!def) throw new Error('wplace layer missing in style');
   return def;
@@ -52,11 +72,14 @@ export function getWplaceLayerDef(version, basemapType) {
 export function setWplaceVersion(map, version, opts = {}) {
   const basemapType = opts.basemapType ?? WplaceMapState.basemapType;
   const strategy = opts.strategy ?? WplaceMapState.strategy;
+  const supersampling = clampSupersampling(opts.supersampling ?? WplaceMapState.supersampling);
   const prevBasemap = WplaceMapState.basemapType;
+  const prevSupersampling = WplaceMapState.supersampling;
   WplaceMapState.version = version;
   WplaceMapState.basemapType = basemapType;
-  if (strategy === 'reload' || basemapType !== prevBasemap) {
-    map.setStyle(getMapStyle(version, basemapType));
+  WplaceMapState.supersampling = supersampling;
+  if (strategy === 'reload' || basemapType !== prevBasemap || supersampling !== prevSupersampling) {
+    map.setStyle(getMapStyle(version, basemapType, supersampling));
     return new Promise((resolve) => {
       map.once('styledata', () => {
         WplaceMapState.currentLayerId = 'wplace';
@@ -70,12 +93,12 @@ export function setWplaceVersion(map, version, opts = {}) {
       });
     });
   }
-  return setWplaceVersionSwap(map, version, basemapType);
+  return setWplaceVersionSwap(map, version, basemapType, supersampling);
 }
 
 let pendingSwap = null;
 
-function setWplaceVersionSwap(map, version, basemapType) {
+function setWplaceVersionSwap(map, version, basemapType, supersampling = WplaceMapState.supersampling) {
   if (WplaceMapState.pendingLayerId) {
     const stale = WplaceMapState.pendingLayerId;
     WplaceMapState.pendingLayerId = null;
@@ -91,8 +114,8 @@ function setWplaceVersionSwap(map, version, basemapType) {
   }
   const id = `wplace-${++WplaceMapState.layerCount}`;
   WplaceMapState.pendingLayerId = id;
-  const style = getMapStyle(version, basemapType);
-  const def = getWplaceLayerDef(version, basemapType);
+  const style = getMapStyle(version, basemapType, supersampling);
+  const def = getWplaceLayerDef(version, basemapType, supersampling);
   map.addSource(id, style.sources.wplace);
   map.addLayer({ ...def, id, source: id, paint: { ...def.paint, 'raster-opacity': 0 } });
   return new Promise((resolve, reject) => {
@@ -139,7 +162,7 @@ function getWplaceTileUrl(version) {
 }
 
 // Map style with raster basemap for a given wplace version
-function getMapStyleRaster(version) {
+function getMapStyleRaster(version, supersampling = WplaceMapState.supersampling) {
     return {
     version: 8,
     sources: {
@@ -162,7 +185,7 @@ function getMapStyleRaster(version) {
         ],
         minzoom: 0,
         maxzoom: 11,
-        tileSize: 1000,
+        tileSize: wplaceTileSize(supersampling),
         attribution: '© wplace.live'
         }
     },
@@ -183,6 +206,7 @@ function getMapStyleRaster(version) {
         paint: {
             "raster-fade-duration": 0,
             "raster-opacity-transition": { duration: 0 },
+            "raster-resampling": "linear"
         }
         }
     ]
@@ -191,7 +215,7 @@ function getMapStyleRaster(version) {
 
 // Map style with vector basemap for a given wplace version
 // WARNING: very long (6000+ lines) style
-function getMapStyleVector(version) {
+function getMapStyleVector(version, supersampling = WplaceMapState.supersampling) {
     let style = {
     "version": 8,
     "sources": {
@@ -202,7 +226,7 @@ function getMapStyleVector(version) {
             ],
             "minzoom": 0,
             "maxzoom": 11,
-            "tileSize": 1000,
+            "tileSize": wplaceTileSize(supersampling),
             "attribution": '© wplace.live'
         },
         "ne2_shaded": {
@@ -6243,6 +6267,7 @@ function getMapStyleVector(version) {
             "paint": {
             "raster-fade-duration": 0,
             "raster-opacity-transition": { duration: 0 },
+            "raster-resampling": "linear"
             }
         }
     ]

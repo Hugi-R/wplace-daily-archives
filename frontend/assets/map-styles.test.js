@@ -213,3 +213,55 @@ describe('transparency', () => {
     assert.equal(map.getPaintProperty('wplace', 'raster-opacity'), 0.3);
   });
 });
+
+import { wplaceTileSize } from './map-styles.js';
+
+describe('supersampling', () => {
+  beforeEach(() => { resetWplaceState(); });
+  it('defaults to x2 (tileSize 500)', () => {
+    assert.equal(WplaceMapState.supersampling, 2);
+    assert.equal(wplaceTileSize(), 500);
+  });
+
+  it('maps x1-x8 to tileSize in both basemaps', () => {
+    const expected = { 1: 1000, 2: 500, 3: 333, 4: 250, 5: 200, 6: 167, 7: 143, 8: 125 };
+    for (const [s, ts] of Object.entries(expected)) {
+      assert.equal(wplaceTileSize(Number(s)), ts, `x${s}`);
+      for (const bm of ['raster', 'vector']) {
+        const def = getMapStyle('v1', bm, Number(s)).sources.wplace;
+        assert.equal(def.tileSize, ts, `${bm} x${s}`);
+      }
+    }
+  });
+
+  it('clamps and rounds out-of-range values', () => {
+    assert.equal(wplaceTileSize(0), 1000);
+    assert.equal(wplaceTileSize(9), 125);
+    assert.equal(wplaceTileSize(2.7), 333);
+    assert.equal(wplaceTileSize('abc'), 500);
+  });
+
+  it('parses ?supersampling= and ignores invalid values', () => {
+    initWplaceStateFromUrl('?supersampling=4');
+    assert.equal(WplaceMapState.supersampling, 4);
+    assert.equal(wplaceTileSize(), 250);
+    initWplaceStateFromUrl('?supersampling=99');
+    assert.equal(WplaceMapState.supersampling, 2);
+    initWplaceStateFromUrl('?supersampling=abc');
+    assert.equal(WplaceMapState.supersampling, 2);
+  });
+
+  it('forces reload path when supersampling changes', async () => {
+    const map = createMockMap();
+    map.addSource('wplace', { type: 'raster', tiles: ['old'] });
+    map.addLayer({ id: 'wplace', type: 'raster', source: 'wplace', paint: {} });
+    WplaceMapState.strategy = 'swap';
+    const p = setWplaceVersion(map, 'vS', { basemapType: 'raster', supersampling: 4 });
+    assert.equal(WplaceMapState.supersampling, 4);
+    assert.ok(map._style, 'style was set (reload, not swap)');
+    assert.equal(WplaceMapState.pendingLayerId, null);
+    map.fire('styledata', {});
+    await p;
+    assert.equal(map._style.sources.wplace.tileSize, 250);
+  });
+});

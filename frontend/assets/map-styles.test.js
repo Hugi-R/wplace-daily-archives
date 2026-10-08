@@ -20,8 +20,8 @@ describe('WplaceMapState', () => {
     assert.equal(WplaceMapState.isTransparent, false);
   });
 
-  it('parses ?layerswap=old and ?basemap=raster', () => {
-    initWplaceStateFromUrl('?layerswap=old&basemap=raster');
+  it('parses ?layerswap=reload and ?basemap=raster', () => {
+    initWplaceStateFromUrl('?layerswap=reload&basemap=raster');
     assert.equal(WplaceMapState.strategy, 'reload');
     assert.equal(WplaceMapState.basemapType, 'raster');
   });

@@ -56,8 +56,7 @@ export function initWplaceStateFromUrl(search) {
   const s = search ?? (typeof window !== 'undefined' ? window.location.search : '');
   const p = new URLSearchParams(s);
   const ls = (p.get('layerswap') || '').toLowerCase();
-  if (ls === 'old' || ls === 'reload') WplaceMapState.strategy = 'reload';
-  else if (ls === 'new' || ls === 'swap') WplaceMapState.strategy = 'swap';
+  if (ls === 'swap' || ls === 'reload') WplaceMapState.strategy = ls;
   const bm = (p.get('basemap') || '').toLowerCase();
   if (bm === 'raster' || bm === 'vector') WplaceMapState.basemapType = bm;
   const ss = p.get('supersampling');
@@ -159,6 +158,28 @@ function setWplaceVersionSwap(map, version, basemapType, supersampling = WplaceM
   });
 }
 
+export function getWplaceOpacity(map) {
+  try {
+    const v = map.getPaintProperty(WplaceMapState.currentLayerId, 'raster-opacity');
+    if (v !== undefined && v !== null) return v;
+  } catch {}
+  return WplaceMapState.isTransparent ? 0.3 : 1;
+}
+
+export function setWplaceTransparency(map, transparent) {
+  WplaceMapState.isTransparent = transparent;
+  const opacity = transparent ? 0.3 : 1;
+  try {
+    if (map.getLayer(WplaceMapState.currentLayerId)) {
+      map.setPaintProperty(WplaceMapState.currentLayerId, 'raster-opacity', opacity);
+    }
+  } catch {}
+  try {
+    const p = WplaceMapState.pendingLayerId;
+    if (p && map.getLayer(p)) map.setPaintProperty(p, 'raster-opacity', opacity);
+  } catch {}
+}
+
 // Function to get wplace tile URL for selected version
 function getWplaceTileUrl(version) {
     return `merged://tiles/${version}/{z}/{x}/{y}.png`;
@@ -209,7 +230,7 @@ function getMapStyleRaster(version, supersampling = WplaceMapState.supersampling
         paint: {
             "raster-fade-duration": 0,
             "raster-opacity-transition": { duration: 0 },
-            "raster-resampling": "linear"
+            "raster-resampling": "nearest"
         }
         }
     ]
@@ -6270,32 +6291,10 @@ function getMapStyleVector(version, supersampling = WplaceMapState.supersampling
             "paint": {
             "raster-fade-duration": 0,
             "raster-opacity-transition": { duration: 0 },
-            "raster-resampling": "linear"
+            "raster-resampling": "nearest"
             }
         }
     ]
 }
     return style;  
-}
-
-export function getWplaceOpacity(map) {
-  try {
-    const v = map.getPaintProperty(WplaceMapState.currentLayerId, 'raster-opacity');
-    if (v !== undefined && v !== null) return v;
-  } catch {}
-  return WplaceMapState.isTransparent ? 0.3 : 1;
-}
-
-export function setWplaceTransparency(map, transparent) {
-  WplaceMapState.isTransparent = transparent;
-  const opacity = transparent ? 0.3 : 1;
-  try {
-    if (map.getLayer(WplaceMapState.currentLayerId)) {
-      map.setPaintProperty(WplaceMapState.currentLayerId, 'raster-opacity', opacity);
-    }
-  } catch {}
-  try {
-    const p = WplaceMapState.pendingLayerId;
-    if (p && map.getLayer(p)) map.setPaintProperty(p, 'raster-opacity', opacity);
-  } catch {}
 }

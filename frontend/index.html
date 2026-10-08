@@ -513,7 +513,7 @@
 
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
   <script type="module">
-    import {getMapStyle, WplaceMapState, initWplaceStateFromUrl, setWplaceVersion, setWplaceTransparency, snapSupersampling} from '/assets/map-styles.js';
+    import {getMapStyle, WplaceMapState, initWplaceStateFromUrl, setWplaceVersion, setWplaceTransparency, snapSupersampling, syncStyleParams} from '/assets/map-styles.js';
     var wasmModule = null;
 
     //$$I18N_DICT$$
@@ -830,6 +830,7 @@
         if (typeof wplaceVersion !== 'undefined' && wplaceVersion) {
           params.set('version', wplaceVersion);
         }
+        syncStyleParams(params, WplaceMapState);
         const newUrl = window.location.pathname + '?' + params.toString();
         history.replaceState(null, '', newUrl);
       }
@@ -1529,6 +1530,7 @@
         supersamplingSel.value = String(supersampling);
         WplaceMapState.strategy = strategy;
         setWplaceVersion(map, wplaceVersion, { basemapType, strategy, supersampling }).catch(() => {});
+        try { updateUrlWithMapView(map); } catch (e) { console.error(e); }
       }
       basemapSel.addEventListener('change', applySettings);
       layerswapSel.addEventListener('change', applySettings);

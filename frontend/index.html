@@ -506,7 +506,7 @@
 
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
   <script type="module">
-    import {getMapStyle, WplaceMapState, initWplaceStateFromUrl, setWplaceVersion, setWplaceTransparency} from '/assets/map-styles.js';
+    import {getMapStyle, WplaceMapState, initWplaceStateFromUrl, setWplaceVersion, setWplaceTransparency, snapSupersampling} from '/assets/map-styles.js';
     var wasmModule = null;
 
     //$$I18N_DICT$$
@@ -1482,6 +1482,48 @@
         setWplaceTransparency(map, !WplaceMapState.isTransparent);
         transparencyButton.classList.toggle('toggled', WplaceMapState.isTransparent);
       });
+    });
+
+    // --- Settings panel ---
+    document.addEventListener('DOMContentLoaded', function() {
+      const settingsButton = document.getElementById('toggle-settings');
+      const settingsPanel = document.getElementById('settings-panel');
+      const settingsClose = document.getElementById('settings-close');
+      const basemapSel = document.getElementById('settings-basemap');
+      const layerswapSel = document.getElementById('settings-layerswap');
+      const supersamplingSel = document.getElementById('settings-supersampling');
+
+      // Initialise selects from current state (set from URL at load).
+      basemapSel.value = WplaceMapState.basemapType;
+      layerswapSel.value = WplaceMapState.strategy;
+      supersamplingSel.value = String(WplaceMapState.supersampling);
+
+      function setOpen(open) {
+        settingsPanel.classList.toggle('open', open);
+        settingsButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
+      settingsButton.addEventListener('click', function() {
+        setOpen(!settingsPanel.classList.contains('open'));
+      });
+      settingsClose.addEventListener('click', function() { setOpen(false); });
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && settingsPanel.classList.contains('open')) {
+          setOpen(false);
+          settingsButton.focus();
+        }
+      });
+
+      function applySettings() {
+        const basemapType = basemapSel.value === 'raster' ? 'raster' : 'vector';
+        const strategy = layerswapSel.value === 'reload' ? 'reload' : 'swap';
+        const supersampling = snapSupersampling(supersamplingSel.value);
+        supersamplingSel.value = String(supersampling);
+        WplaceMapState.strategy = strategy;
+        setWplaceVersion(map, wplaceVersion, { basemapType, strategy, supersampling }).catch(() => {});
+      }
+      basemapSel.addEventListener('change', applySettings);
+      layerswapSel.addEventListener('change', applySettings);
+      supersamplingSel.addEventListener('change', applySettings);
     });
 
     async function initWasm() {

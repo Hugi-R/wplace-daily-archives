@@ -56,7 +56,7 @@ export function initWplaceStateFromUrl(search) {
   const s = search ?? (typeof window !== 'undefined' ? window.location.search : '');
   const p = new URLSearchParams(s);
   const ls = (p.get('layerswap') || '').toLowerCase();
-  if (ls === 'swap' || ls === 'reload') WplaceMapState.strategy = ls;
+  if (ls === 'swap' || ls === 'reload' || ls === 'overlay') WplaceMapState.strategy = ls;
   const bm = (p.get('basemap') || '').toLowerCase();
   if (bm === 'raster' || bm === 'vector') WplaceMapState.basemapType = bm;
   const ss = p.get('supersampling');

@@ -26,6 +26,11 @@ describe('WplaceMapState', () => {
     assert.equal(WplaceMapState.basemapType, 'raster');
   });
 
+  it('parses ?layerswap=overlay', () => {
+    initWplaceStateFromUrl('?layerswap=overlay');
+    assert.equal(WplaceMapState.strategy, 'overlay');
+  });
+
   it('ignores invalid params and keeps defaults', () => {
     initWplaceStateFromUrl('?layerswap=bogus&basemap=bogus');
     assert.equal(WplaceMapState.strategy, 'swap');

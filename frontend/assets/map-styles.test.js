@@ -276,3 +276,29 @@ describe('supersampling', () => {
     assert.equal(map._style.sources.wplace.tileSize, 250);
   });
 });
+
+describe('setWplaceVersion overlay', () => {
+  beforeEach(() => { resetWplaceState(); WplaceMapState.basemapType = 'raster'; WplaceMapState.strategy = 'overlay'; });
+
+  function seededMap() {
+    const map = createMockMap();
+    map.addSource('wplace', { type: 'raster', tiles: ['old'] });
+    map.addLayer({ id: 'wplace', type: 'raster', source: 'wplace', paint: {} });
+    map.setPaintProperty('wplace', 'raster-opacity', 1);
+    return map;
+  }
+
+  it('shows new layer immediately on top and promotes on load', async () => {
+    const map = seededMap();
+    const p = setWplaceVersion(map, 'vO', { basemapType: 'raster' });
+    assert.equal(WplaceMapState.pendingLayerId, 'wplace-1');
+    const top = map.getLayer('wplace-1');
+    assert.equal(top.paint['raster-opacity'], 1);
+    assert.ok(map.getLayer('wplace'), 'old layer stays until new loads');
+    map.fire('sourcedata', { sourceId: 'wplace-1', tile: {} });
+    await p;
+    assert.equal(WplaceMapState.currentLayerId, 'wplace-1');
+    assert.equal(WplaceMapState.pendingLayerId, null);
+    assert.equal(map.getLayer('wplace'), null);
+  });
+});

@@ -95,12 +95,15 @@ export function setWplaceVersion(map, version, opts = {}) {
       });
     });
   }
-  return setWplaceVersionSwap(map, version, basemapType, supersampling);
+  if (strategy === 'overlay') {
+    return setWplaceVersionSwap(map, version, basemapType, supersampling, getWplaceOpacity(map));
+  }
+  return setWplaceVersionSwap(map, version, basemapType, supersampling, 0);
 }
 
 let pendingSwap = null;
 
-function setWplaceVersionSwap(map, version, basemapType, supersampling = WplaceMapState.supersampling) {
+function setWplaceVersionSwap(map, version, basemapType, supersampling = WplaceMapState.supersampling, initialOpacity = 0) {
   if (WplaceMapState.pendingLayerId) {
     const stale = WplaceMapState.pendingLayerId;
     WplaceMapState.pendingLayerId = null;
@@ -119,7 +122,7 @@ function setWplaceVersionSwap(map, version, basemapType, supersampling = WplaceM
   const style = getMapStyle(version, basemapType, supersampling);
   const def = getWplaceLayerDef(version, basemapType, supersampling);
   map.addSource(id, style.sources.wplace);
-  map.addLayer({ ...def, id, source: id, paint: { ...def.paint, 'raster-opacity': 0 } });
+  map.addLayer({ ...def, id, source: id, paint: { ...def.paint, 'raster-opacity': initialOpacity } });
   return new Promise((resolve, reject) => {
     const swap = function (e) {
       if (WplaceMapState.pendingLayerId !== id) {

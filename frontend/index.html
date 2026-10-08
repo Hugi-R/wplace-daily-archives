@@ -170,14 +170,42 @@
       gap: 8px;
       border-bottom: 1px solid var(--border-color);
     }
-    #overlay-toggle {
-      background: var(--panel-bg-weak);
-      padding: 6px 12px;
-      border-radius: 4px;
-      font-size: 16px;
-      z-index: 3;
-      align-self: flex-start;
+    #settings-panel {
+      position: absolute;
+      bottom: 100px;
+      left: 10px;
+      z-index: 20;
+      width: 250px;
+      max-width: calc(100vw - 20px);
+      max-height: 60vh;
+      overflow-y: auto;
+      background: var(--panel-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      box-shadow: var(--shadow-lg);
+      box-sizing: border-box;
+      padding: 10px 12px;
+      font-size: 14px;
+      display: none;
+      color: var(--button-text);
     }
+    #settings-panel.open { display: block; }
+    #settings-panel h2 { margin: 0 24px 8px 0; font-size: 15px; }
+    #settings-panel label { display: block; margin: 8px 0 2px; }
+    #settings-panel select { width: 100%; box-sizing: border-box; font-size: 14px; }
+    #settings-close {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+      cursor: pointer;
+      font-size: 18px;
+      color: var(--muted-text);
+      background: transparent;
+      border: none;
+      padding: 0;
+      line-height: 1;
+    }
+    #settings-close:hover { color: var(--muted-text-strong); }
     #transparency-toggle button {
       padding: 6px;
       font-size: 0;
@@ -383,9 +411,6 @@
         <button type="submit" style="font-size:15px;">{{t:go}}</button>
       </form>
     </div>
-    <div id="overlay-toggle">
-      <label><input type="checkbox" id="toggle-tile-overlay"> {{t:show_tile_overlay}}</label>
-    </div>
     <div id="export-wrap">
       <button id="export-btn" title="{{t:export_btn_title}}">{{t:export}}</button>
     </div>
@@ -450,11 +475,33 @@
         <path d="M440-440v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm160 0v-80h80v80h-80Zm80-80v-80h80v80h-80Zm-320 0v-80h80v80h-80Zm-80 320q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm80-80h80v-80h-80v80Zm160 0h80v-80h-80v80Zm320 0v-80 80Zm-560-80h80v-80h80v80h80v-80h80v80h80v-80h80v80h80v-80h-80v-80h80v-320H200v320h80v80h-80v80Zm0 80v-560 560Zm560-240v80-80ZM600-280v80h80v-80h-80Z"></path>
       </svg>
     </button>
-<button id="toggle-settings" title="{{t:settings_title}}" aria-label="{{t:settings_title}}" aria-expanded="false" aria-controls="settings-panel" style="padding: 6px; font-size: 0px;">
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="22" height="22" fill="currentColor">
-    <path d="M480-120q-35 0-68-7.5T347-148l-32 19-73-73 19-32q-13-32-20.5-65.5T233-368H160v-224h73q7-36 20.5-68.5T274-726l-19-32 73-73 32 19q32-13 65-20.5T493-840h-13v-40h160v40q36 7 68 20.5T773-800l32-19 73 73-19 32q13 32 20.5 65.5T887-580h73v224h-73q-7 36-20.5 68.5T846-222l19 32-73 73-32-19q-32 13-65 20.5T627-108l13-12H480v-40H320v40q0 35 7.5 68T348-148l-32 19 73 73 32-19q32 13 65 20.5T554-47l-13 12h-61v-85Zm0-200q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Zm0-80q-17 0-28.5-11.5T440-440q0-17 11.5-28.5T480-480q17 0 28.5 11.5T520-440q0 17-11.5 28.5T480-400Zm0-160q33 0 56.5-23.5T560-640q0-33-23.5-56.5T480-720q-33 0-56.5 23.5T400-640q0 33 23.5 56.5T480-560Z"/>
-  </svg>
-</button>
+  <button id="toggle-settings" title="{{t:settings_title}}" aria-label="{{t:settings_title}}" aria-expanded="false" aria-controls="settings-panel" style="padding: 6px; font-size: 0px;">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="22" height="22" fill="currentColor">
+      <path d="M480-120q-35 0-68-7.5T347-148l-32 19-73-73 19-32q-13-32-20.5-65.5T233-368H160v-224h73q7-36 20.5-68.5T274-726l-19-32 73-73 32 19q32-13 65-20.5T493-840h-13v-40h160v40q36 7 68 20.5T773-800l32-19 73 73-19 32q13 32 20.5 65.5T887-580h73v224h-73q-7 36-20.5 68.5T846-222l19 32-73 73-32-19q-32 13-65 20.5T627-108l13-12H480v-40H320v40q0 35 7.5 68T348-148l-32 19 73 73 32-19q32 13 65 20.5T554-47l-13 12h-61v-85Zm0-200q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Zm0-80q-17 0-28.5-11.5T440-440q0-17 11.5-28.5T480-480q17 0 28.5 11.5T520-440q0 17-11.5 28.5T480-400Zm0-160q33 0 56.5-23.5T560-640q0-33-23.5-56.5T480-720q-33 0-56.5 23.5T400-640q0 33 23.5 56.5T480-560Z"/>
+    </svg>
+  </button>
+  </div>
+  <div id="settings-panel" role="dialog" aria-label="{{t:settings}}">
+    <button id="settings-close" aria-label="{{t:close_settings_panel}}" title="{{t:close}}">&times;</button>
+    <h2>{{t:settings}}</h2>
+    <label for="settings-basemap">{{t:basemap}}</label>
+    <select id="settings-basemap">
+      <option value="vector">{{t:basemap_vector}}</option>
+      <option value="raster">{{t:basemap_raster}}</option>
+    </select>
+    <label for="settings-layerswap">{{t:layerswap}}</label>
+    <select id="settings-layerswap">
+      <option value="swap">{{t:layerswap_swap}}</option>
+      <option value="reload">{{t:layerswap_reload}}</option>
+    </select>
+    <label for="settings-supersampling">{{t:supersampling}}</label>
+    <select id="settings-supersampling">
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="4">4</option>
+      <option value="8">8</option>
+    </select>
+    <label><input type="checkbox" id="toggle-tile-overlay"> {{t:show_tile_overlay}}</label>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>

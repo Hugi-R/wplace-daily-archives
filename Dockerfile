@@ -34,6 +34,7 @@ RUN mkdir -p weeks
 COPY --from=wasm /build/frontend/pkg/wimage_wasm.js assets/wimage_wasm.js
 COPY --from=wasm /build/frontend/pkg/wimage_wasm_bg.wasm assets/wimage_wasm_bg.wasm
 COPY frontend/assets/tile-worker.js assets/tile-worker.js
+COPY frontend/assets/map-styles.js assets/map-styles.js
 COPY frontend/index.html index.html.tmpl
 COPY frontend/favicon.ico favicon.ico
 COPY frontend/osm000.png osm000.png

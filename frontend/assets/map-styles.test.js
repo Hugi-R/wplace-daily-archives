@@ -301,4 +301,36 @@ describe('setWplaceVersion overlay', () => {
     assert.equal(WplaceMapState.pendingLayerId, null);
     assert.equal(map.getLayer('wplace'), null);
   });
+
+  it('cancels prior pending on rapid calls', async () => {
+    const map = seededMap();
+    const p1 = setWplaceVersion(map, 'v1', { basemapType: 'raster' });
+    const p2 = setWplaceVersion(map, 'v2', { basemapType: 'raster' });
+    assert.equal(map.getLayer('wplace-1'), null);
+    assert.equal(WplaceMapState.pendingLayerId, 'wplace-2');
+    await assert.rejects(p1, /superseded/);
+    map.fire('sourcedata', { sourceId: 'wplace-1', tile: {} });
+    assert.equal(WplaceMapState.currentLayerId, 'wplace');
+    map.fire('sourcedata', { sourceId: 'wplace-2', tile: {} });
+    await p2;
+    assert.equal(WplaceMapState.currentLayerId, 'wplace-2');
+  });
+
+  it('promotes on error so the promise always settles', async () => {
+    const map = seededMap();
+    const p = setWplaceVersion(map, 'vX', { basemapType: 'raster' });
+    map.fire('error', { type: 'error', sourceId: 'wplace-1' });
+    await p;
+    assert.equal(WplaceMapState.currentLayerId, 'wplace-1');
+  });
+
+  it('preserves transparent opacity on the overlay layer', async () => {
+    const map = seededMap();
+    setWplaceTransparency(map, true);
+    const p = setWplaceVersion(map, 'vT', { basemapType: 'raster' });
+    assert.equal(map.getLayer('wplace-1').paint['raster-opacity'], 0.3);
+    map.fire('sourcedata', { sourceId: 'wplace-1', tile: {} });
+    await p;
+    assert.equal(map.getPaintProperty('wplace-1', 'raster-opacity'), 0.3);
+  });
 });

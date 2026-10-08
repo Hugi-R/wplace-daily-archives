@@ -23,19 +23,21 @@ worker/tile logic.
 
 ### Button + toolbar
 
-- `#transparency-toggle` (absolute, `bottom:10px; left:10px`) becomes a
-  vertical flex column (`gap:6px`) holding two buttons:
-  `#toggle-transparency` (existing, unchanged handler) on top and the new
-  `#toggle-settings` below it.
+- `#map-toolbar` (absolute, `bottom:10px; left:10px`) is a single vertical
+  flex column holding, top to bottom: the `.zoom-button-container` (+/−
+  box), `#toggle-transparency` (existing, unchanged handler), and the new
+  `#toggle-settings` below it. No per-element absolute offsets, so the
+  stack can grow without overlapping.
 - `#toggle-settings` reuses the existing button styling, 22px gear SVG icon,
   `title="{{t:settings_title}}"`, `aria-label` for a11y.
 
 ### Pane
 
-- New `#settings-panel`: small floating card above the toolbar
-  (`position:absolute; bottom:~100px; left:10px; width:~250px;
-  max-width:calc(100vw - 20px); max-height:60vh; overflow-y:auto`),
-  styled like `#encart` (`var(--panel-bg)`, radius, shadow, border).
+- New `#settings-panel`: small floating card to the right of the toolbar,
+  bottom-aligned with it (`position:absolute; bottom:10px; left:56px;
+  width:~250px; max-width:calc(100vw - 76px); max-height:60vh;
+  overflow-y:auto`), styled like `#encart` (`var(--panel-bg)`, radius,
+  shadow, border).
 - Hidden by default; toggles on gear click; closes on gear re-click, ✕
   button, and `Escape`. Independent from `#export-panel` (both may coexist;
   no `body.export-open` interaction).

@@ -499,6 +499,7 @@
     <select id="settings-layerswap">
       <option value="swap">{{t:layerswap_swap}}</option>
       <option value="reload">{{t:layerswap_reload}}</option>
+      <option value="overlay">{{t:layerswap_overlay}}</option>
     </select>
     <label for="settings-supersampling">{{t:supersampling}}</label>
     <select id="settings-supersampling">
@@ -1521,7 +1522,9 @@
 
       function applySettings() {
         const basemapType = basemapSel.value === 'raster' ? 'raster' : 'vector';
-        const strategy = layerswapSel.value === 'reload' ? 'reload' : 'swap';
+        const strategy = ['swap', 'reload', 'overlay'].includes(layerswapSel.value)
+          ? layerswapSel.value
+          : 'swap';
         const supersampling = snapSupersampling(supersamplingSel.value);
         supersamplingSel.value = String(supersampling);
         WplaceMapState.strategy = strategy;

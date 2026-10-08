@@ -38,6 +38,7 @@
   "layerswap": "Cambio de capa",
   "layerswap_swap": "Intercambiar (sin parpadeo)",
   "layerswap_reload": "Recargar",
+  "layerswap_overlay": "Superponer (progresivo)",
   "supersampling": "Supermuestreo",
   "default": "predeterminado",
   "download_tile": "Descargar tesela",

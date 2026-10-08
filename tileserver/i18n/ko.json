@@ -38,6 +38,7 @@
   "layerswap": "레이어 전환",
   "layerswap_swap": "스왑 (깜빡임 없음)",
   "layerswap_reload": "다시 로드",
+  "layerswap_overlay": "오버레이 (점진적)",
   "supersampling": "슈퍼샘플링",
   "default": "기본값",
   "download_tile": "타일 다운로드",

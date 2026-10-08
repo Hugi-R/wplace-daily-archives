@@ -38,6 +38,7 @@
   "layerswap": "Katman değiştirme",
   "layerswap_swap": "Takas (titreme yok)",
   "layerswap_reload": "Yeniden yükle",
+  "layerswap_overlay": "Bindirme (aşamalı)",
   "supersampling": "Süper örnekleme",
   "default": "varsayılan",
   "download_tile": "Karoyu indir",

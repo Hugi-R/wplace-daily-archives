@@ -38,6 +38,7 @@
   "layerswap": "レイヤー切替",
   "layerswap_swap": "スワップ（チラつきなし）",
   "layerswap_reload": "リロード",
+  "layerswap_overlay": "オーバーレイ（プログレッシブ）",
   "supersampling": "スーパーサンプリング",
   "default": "デフォルト",
   "download_tile": "タイルをダウンロード",

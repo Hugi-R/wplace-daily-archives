@@ -38,6 +38,7 @@
   "layerswap": "Troca de camada",
   "layerswap_swap": "Trocar (sem piscar)",
   "layerswap_reload": "Recarregar",
+  "layerswap_overlay": "Sobrepor (progressivo)",
   "supersampling": "Superamostragem",
   "default": "padrão",
   "download_tile": "Baixar tile",

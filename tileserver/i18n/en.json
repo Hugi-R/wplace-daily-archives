@@ -38,6 +38,7 @@
   "layerswap": "Layer swap",
   "layerswap_swap": "Swap (no flash)",
   "layerswap_reload": "Reload",
+  "layerswap_overlay": "Overlay (progressive)",
   "supersampling": "Supersampling",
   "default": "default",
   "download_tile": "Download tile",

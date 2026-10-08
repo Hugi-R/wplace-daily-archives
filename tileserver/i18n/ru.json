@@ -38,6 +38,7 @@
   "layerswap": "Смена слоя",
   "layerswap_swap": "Замена (без мигания)",
   "layerswap_reload": "Перезагрузка",
+  "layerswap_overlay": "Наложение (прогрессивное)",
   "supersampling": "Суперсэмплинг",
   "default": "по умолчанию",
   "download_tile": "Скачать тайл",

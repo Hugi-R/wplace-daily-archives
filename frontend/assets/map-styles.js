@@ -22,6 +22,16 @@ export function snapSupersampling(s) {
   return best;
 }
 
+export function syncStyleParams(params, state = WplaceMapState) {
+  if (state.basemapType !== 'vector') params.set('basemap', state.basemapType);
+  else params.delete('basemap');
+  if (state.strategy !== 'swap') params.set('layerswap', state.strategy);
+  else params.delete('layerswap');
+  if (state.supersampling !== 2) params.set('supersampling', String(state.supersampling));
+  else params.delete('supersampling');
+  return params;
+}
+
 export function wplaceTileSize(s = WplaceMapState.supersampling) {
   return Math.round(WPLACE_TILE_PIXELS / snapSupersampling(s));
 }

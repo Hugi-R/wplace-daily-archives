@@ -334,3 +334,48 @@ describe('setWplaceVersion overlay', () => {
     assert.equal(map.getPaintProperty('wplace-1', 'raster-opacity'), 0.3);
   });
 });
+import { syncStyleParams } from './map-styles.js';
+
+describe('syncStyleParams', () => {
+  it('omits all three params for default state', () => {
+    resetWplaceState();
+    const p = syncStyleParams(new URLSearchParams('lat=1&version=5'));
+    assert.equal(p.has('basemap'), false);
+    assert.equal(p.has('layerswap'), false);
+    assert.equal(p.has('supersampling'), false);
+    assert.equal(p.get('lat'), '1');
+    assert.equal(p.get('version'), '5');
+  });
+
+  it('writes non-default values', () => {
+    resetWplaceState();
+    WplaceMapState.basemapType = 'raster';
+    WplaceMapState.strategy = 'overlay';
+    WplaceMapState.supersampling = 4;
+    const p = syncStyleParams(new URLSearchParams());
+    assert.equal(p.get('basemap'), 'raster');
+    assert.equal(p.get('layerswap'), 'overlay');
+    assert.equal(p.get('supersampling'), '4');
+  });
+
+  it('deletes stale params when back to default', () => {
+    resetWplaceState();
+    const p = syncStyleParams(new URLSearchParams('basemap=raster&layerswap=reload&supersampling=8'));
+    assert.equal(p.has('basemap'), false);
+    assert.equal(p.has('layerswap'), false);
+    assert.equal(p.has('supersampling'), false);
+  });
+
+  it('round-trips through initWplaceStateFromUrl', () => {
+    resetWplaceState();
+    WplaceMapState.basemapType = 'raster';
+    WplaceMapState.strategy = 'overlay';
+    WplaceMapState.supersampling = 4;
+    const qs = syncStyleParams(new URLSearchParams()).toString();
+    resetWplaceState();
+    initWplaceStateFromUrl('?' + qs);
+    assert.equal(WplaceMapState.basemapType, 'raster');
+    assert.equal(WplaceMapState.strategy, 'overlay');
+    assert.equal(WplaceMapState.supersampling, 4);
+  });
+});

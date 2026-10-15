@@ -258,6 +258,28 @@
       flex: 1;
       margin: 0;
     }
+    #wplace-version-label.is-loading {
+      background-image: linear-gradient(90deg, var(--text-color) 45%, var(--accent-color) 50%, var(--text-color) 55%);
+      background-size: 200% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      animation: version-label-shimmer 1s ease-in-out infinite alternate;
+    }
+    @keyframes version-label-shimmer {
+      from { background-position: 100% 0; }
+      to { background-position: 0% 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #wplace-version-label.is-loading {
+        animation: none;
+        background-image: none;
+        color: var(--text-color);
+        -webkit-text-fill-color: var(--text-color);
+        opacity: 0.6;
+      }
+    }
     @media (max-width: 500px) {
       #version-label {
         display: none !important;
@@ -724,6 +746,7 @@
       if (_idx >= 0) versionSlider.value = _idx;
     }
     updateVersionLabel(versionSlider.value);
+    versionLabel.classList.add('is-loading');
     let wplaceVersion = WPLACE_VERSIONS[versionSlider.value].version;
     initWplaceStateFromUrl(window.location.search);
     let basemapType = WplaceMapState.basemapType;
@@ -856,8 +879,14 @@
       zoom: _initialView.zoom
     });
 
-    function setMapVersion(version) {
-      return setWplaceVersion(map, version);
+    let versionLoadPending = 0;
+    function setMapVersion(version, opts) {
+      versionLoadPending++;
+      versionLabel.classList.add('is-loading');
+      return setWplaceVersion(map, version, opts).finally(function() {
+        versionLoadPending = Math.max(0, versionLoadPending - 1);
+        if (versionLoadPending === 0) versionLabel.classList.remove('is-loading');
+      });
     }
 
     // Display and update zoom level
@@ -871,6 +900,7 @@
     map.on('zoom', updateZoom);
     map.on('load', function() {
       updateZoom();
+      versionLabel.classList.remove('is-loading');
     });
 
     // Update URL when the map stops moving and keep inputs in sync
@@ -1529,7 +1559,7 @@
         const supersampling = snapSupersampling(supersamplingSel.value);
         supersamplingSel.value = String(supersampling);
         WplaceMapState.strategy = strategy;
-        setWplaceVersion(map, wplaceVersion, { basemapType, strategy, supersampling }).catch(() => {});
+        setMapVersion(wplaceVersion, { basemapType, strategy, supersampling }).catch(() => {});
         try { updateUrlWithMapView(map); } catch (e) { console.error(e); }
       }
       basemapSel.addEventListener('change', applySettings);

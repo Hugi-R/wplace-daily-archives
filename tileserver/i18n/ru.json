@@ -41,6 +41,7 @@
   "layerswap_overlay": "Наложение (прогрессивное)",
   "supersampling": "Суперсэмплинг",
   "default": "по умолчанию",
+  "denoise": "Шумоподавление",
   "download_tile": "Скачать тайл",
   "go_wplace_live": "Перейти на wplace.live",
   "download_overlay": "Скачать оверлей",

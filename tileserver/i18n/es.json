@@ -41,6 +41,7 @@
   "layerswap_overlay": "Superponer (progresivo)",
   "supersampling": "Supermuestreo",
   "default": "predeterminado",
+  "denoise": "Eliminar ruido",
   "download_tile": "Descargar tesela",
   "go_wplace_live": "Ir a wplace.live",
   "download_overlay": "Descargar superposición",

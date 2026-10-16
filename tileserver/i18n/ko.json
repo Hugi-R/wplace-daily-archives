@@ -41,6 +41,7 @@
   "layerswap_overlay": "오버레이 (점진적)",
   "supersampling": "슈퍼샘플링",
   "default": "기본값",
+  "denoise": "노이즈 제거",
   "download_tile": "타일 다운로드",
   "go_wplace_live": "wplace.live로 이동",
   "download_overlay": "오버레이 다운로드",

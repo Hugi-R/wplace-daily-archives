@@ -41,6 +41,7 @@
   "layerswap_overlay": "Overlay (progressive)",
   "supersampling": "Supersampling",
   "default": "default",
+  "denoise": "Denoise",
   "download_tile": "Download tile",
   "go_wplace_live": "Go wplace.live",
   "download_overlay": "Download overlay",

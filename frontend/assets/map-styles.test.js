@@ -379,3 +379,57 @@ describe('syncStyleParams', () => {
     assert.equal(WplaceMapState.supersampling, 4);
   });
 });
+
+describe('denoise', () => {
+  beforeEach(() => { resetWplaceState(); });
+
+  it('defaults to false', () => {
+    assert.equal(WplaceMapState.denoise, false);
+  });
+
+  it('parses ?denoise=1 and ?denoise=true', () => {
+    initWplaceStateFromUrl('?denoise=1');
+    assert.equal(WplaceMapState.denoise, true);
+    initWplaceStateFromUrl('?denoise=true');
+    assert.equal(WplaceMapState.denoise, true);
+  });
+
+  it('ignores missing and invalid values', () => {
+    initWplaceStateFromUrl('?denoise=bogus');
+    assert.equal(WplaceMapState.denoise, false);
+    initWplaceStateFromUrl('?denoise=0');
+    assert.equal(WplaceMapState.denoise, false);
+    initWplaceStateFromUrl('');
+    assert.equal(WplaceMapState.denoise, false);
+  });
+
+  it('resets to false', () => {
+    initWplaceStateFromUrl('?denoise=1');
+    resetWplaceState();
+    assert.equal(WplaceMapState.denoise, false);
+  });
+});
+
+describe('syncStyleParams denoise', () => {
+  it('writes denoise=1 when enabled', () => {
+    resetWplaceState();
+    WplaceMapState.denoise = true;
+    const p = syncStyleParams(new URLSearchParams());
+    assert.equal(p.get('denoise'), '1');
+  });
+
+  it('omits denoise by default and deletes stale param', () => {
+    resetWplaceState();
+    const p = syncStyleParams(new URLSearchParams('denoise=1'));
+    assert.equal(p.has('denoise'), false);
+  });
+
+  it('round-trips denoise through initWplaceStateFromUrl', () => {
+    resetWplaceState();
+    WplaceMapState.denoise = true;
+    const qs = syncStyleParams(new URLSearchParams()).toString();
+    resetWplaceState();
+    initWplaceStateFromUrl('?' + qs);
+    assert.equal(WplaceMapState.denoise, true);
+  });
+});

@@ -531,6 +531,7 @@
       <option value="8">8</option>
     </select>
     <label><input type="checkbox" id="toggle-tile-overlay"> {{t:show_tile_overlay}}</label>
+    <label><input type="checkbox" id="toggle-denoise"> {{t:denoise}}</label>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
@@ -595,10 +596,10 @@
         }
       }
 
-      async decompress(version, buffer) {
+      async decompress(version, buffer, denoise) {
         return new Promise((resolve, reject) => {
           const taskId = this.taskIdCounter++;
-          const task = { type: 'decompress', taskId, version, buffers: [buffer], resolve, reject };
+          const task = { type: 'decompress', taskId, version, buffers: [buffer], denoise: !!denoise, resolve, reject };
           
           const availableWorker = this.workers.find(w => !w.busy && w.ready);
           if (availableWorker) {
@@ -613,7 +614,7 @@
         worker.busy = true;
         this.activeTasks.set(task.taskId, task);
         worker.postMessage(
-          { type: task.type, data: { taskId: task.taskId, version: task.version, buffers: task.buffers } },
+          { type: task.type, data: { taskId: task.taskId, version: task.version, buffers: task.buffers, denoise: task.denoise } },
           task.buffers // Transfer the buffers for efficiency
         );
       }
@@ -657,7 +658,7 @@
 
     // Initialize worker pool (adjust number of workers based on your needs)
     const tileWorkerPool = new TileWorkerPool(4);
-    
+
     // --- Encart close handler ---
     document.addEventListener('DOMContentLoaded', function() {
       var encartClose = document.getElementById('encart-close');
@@ -769,7 +770,7 @@
       const perfNetworkEnd = performance.now();
       metricsDecompressNetwork.push(perfNetworkEnd - perfStart);
 
-      const img = await tileWorkerPool.decompress(version, buffer);
+      const img = await tileWorkerPool.decompress(version, buffer, WplaceMapState.denoise);
 
       const perfEnd = performance.now();
       metricsDecompressProcess.push(perfEnd - perfNetworkEnd);
@@ -791,7 +792,8 @@
 
       const TILE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
       const cache = typeof caches !== 'undefined' ? await caches.open("merged-tiles") : null;
-      const cacheKey = `tile-${version}-${z}-${x}-${y}`;
+      const denoiseSuffix = WplaceMapState.denoise ? '-denoise' : '';
+      const cacheKey = `tile-${version}-${z}-${x}-${y}${denoiseSuffix}`;
       const metaKey = `meta-${cacheKey}`;
 
       if (cache) {
@@ -992,7 +994,7 @@
 
       // Get tile from cache
       const cache = await caches.open("merged-tiles");
-      const cacheKey = `tile-${wplaceVersion}-${z}-${x}-${y}`;
+      const cacheKey = `tile-${wplaceVersion}-${z}-${x}-${y}${WplaceMapState.denoise ? '-denoise' : ''}`;
       const cachedResponse = await cache.match(cacheKey);
       if (cachedResponse) {
         const blob = await cachedResponse.blob();
@@ -1044,7 +1046,7 @@
 
       // Get tile from cache
       const cache = await caches.open("merged-tiles");
-      const cacheKey = `tile-${wplaceVersion}-${z}-${x}-${y}`;
+      const cacheKey = `tile-${wplaceVersion}-${z}-${x}-${y}${WplaceMapState.denoise ? '-denoise' : ''}`;
       const cachedResponse = await cache.match(cacheKey);
       if (cachedResponse) {
         const blob = await cachedResponse.blob();
@@ -1530,11 +1532,13 @@
       const basemapSel = document.getElementById('settings-basemap');
       const layerswapSel = document.getElementById('settings-layerswap');
       const supersamplingSel = document.getElementById('settings-supersampling');
+      const denoiseToggle = document.getElementById('toggle-denoise');
 
       // Initialise selects from current state (set from URL at load).
       basemapSel.value = WplaceMapState.basemapType;
       layerswapSel.value = WplaceMapState.strategy;
       supersamplingSel.value = String(WplaceMapState.supersampling);
+      denoiseToggle.checked = WplaceMapState.denoise;
 
       function setOpen(open) {
         settingsPanel.classList.toggle('open', open);
@@ -1565,6 +1569,11 @@
       basemapSel.addEventListener('change', applySettings);
       layerswapSel.addEventListener('change', applySettings);
       supersamplingSel.addEventListener('change', applySettings);
+      denoiseToggle.addEventListener('change', function() {
+        WplaceMapState.denoise = denoiseToggle.checked;
+        setMapVersion(wplaceVersion).catch(() => {});
+        try { updateUrlWithMapView(map); } catch (e) { console.error(e); }
+      });
     });
 
     async function initWasm() {

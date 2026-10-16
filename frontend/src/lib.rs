@@ -159,7 +159,7 @@ pub async fn wasm_video(base_url: &str, z: i64, x1: i64, y1: i64, x2: i64, y2: i
 }
 
 #[wasm_bindgen]
-pub fn get_image(version: u32, data: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
+pub fn get_image(version: u32, data: &[u8], denoising: bool) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
     if data.len() == 0 {
         return Err(wasm_bindgen::JsValue::from_str("Empty data"));
     }
@@ -170,6 +170,29 @@ pub fn get_image(version: u32, data: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsV
 
     let base_paletted = tiles.get(version)
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to reconstruct image: {}", e)))?;
-    let base_paletted = base_paletted.ok_or(wasm_bindgen::JsValue::from_str(&format!("No image found for version {}", version.0)))?;
+    let mut base_paletted = base_paletted.ok_or(wasm_bindgen::JsValue::from_str(&format!("No image found for version {}", version.0)))?;
+    if denoising {
+        denoise(base_paletted.width, base_paletted.height, &mut base_paletted.indices);
+    }
     base_paletted.to_png().map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode png: {}", e)))
+}
+
+// Remove isolated pixels that are not connected to any non transparent pixel
+fn denoise(width: usize, height: usize, indices: &mut [u8]) {
+    for i in 0..indices.len() {
+        if indices[i] == palette::TRANSPARENT { continue; }
+        if i % width != 0 {
+            if indices[i-1] != palette::TRANSPARENT { continue; }
+        }
+        if i % width != width-1 {
+            if indices[i+1] != palette::TRANSPARENT { continue; }
+        }
+        if i >= width {
+            if indices[i-width] != palette::TRANSPARENT { continue; }
+        }
+        if i < indices.len() - width {
+            if indices[i+width] != palette::TRANSPARENT { continue; }
+        }
+        indices[i] = palette::TRANSPARENT;
+    }
 }

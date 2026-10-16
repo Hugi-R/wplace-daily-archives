@@ -29,6 +29,8 @@ export function syncStyleParams(params, state = WplaceMapState) {
   else params.delete('layerswap');
   if (state.supersampling !== 2) params.set('supersampling', String(state.supersampling));
   else params.delete('supersampling');
+  if (state.denoise) params.set('denoise', '1');
+  else params.delete('denoise');
   return params;
 }
 
@@ -45,6 +47,7 @@ export const WplaceMapState = {
   layerCount: 0,
   isTransparent: false,
   supersampling: 2,
+  denoise: false,
 };
 
 export function resetWplaceState() {
@@ -56,6 +59,7 @@ export function resetWplaceState() {
   WplaceMapState.layerCount = 0;
   WplaceMapState.isTransparent = false;
   WplaceMapState.supersampling = 2;
+  WplaceMapState.denoise = false;
   pendingSwap = null;
 }
 
@@ -63,6 +67,7 @@ export function initWplaceStateFromUrl(search) {
   WplaceMapState.strategy = 'swap';
   WplaceMapState.basemapType = 'vector';
   WplaceMapState.supersampling = 2;
+  WplaceMapState.denoise = false;
   const s = search ?? (typeof window !== 'undefined' ? window.location.search : '');
   const p = new URLSearchParams(s);
   const ls = (p.get('layerswap') || '').toLowerCase();
@@ -71,6 +76,8 @@ export function initWplaceStateFromUrl(search) {
   if (bm === 'raster' || bm === 'vector') WplaceMapState.basemapType = bm;
   const ss = p.get('supersampling');
   if (ss !== null) WplaceMapState.supersampling = snapSupersampling(ss);
+  const dn = (p.get('denoise') || '').toLowerCase();
+  if (dn === '1' || dn === 'true') WplaceMapState.denoise = true;
   return WplaceMapState;
 }
 

@@ -41,6 +41,7 @@
   "layerswap_overlay": "Bindirme (aşamalı)",
   "supersampling": "Süper örnekleme",
   "default": "varsayılan",
+  "denoise": "Gürültü temizleme",
   "download_tile": "Karoyu indir",
   "go_wplace_live": "wplace.live'a git",
   "download_overlay": "Katmanı indir",

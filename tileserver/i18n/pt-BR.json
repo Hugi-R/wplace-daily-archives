@@ -41,6 +41,7 @@
   "layerswap_overlay": "Sobrepor (progressivo)",
   "supersampling": "Superamostragem",
   "default": "padrão",
+  "denoise": "Remover ruído",
   "download_tile": "Baixar tile",
   "go_wplace_live": "Ir para wplace.live",
   "download_overlay": "Baixar sobreposição",

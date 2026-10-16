@@ -41,6 +41,7 @@
   "layerswap_overlay": "オーバーレイ（プログレッシブ）",
   "supersampling": "スーパーサンプリング",
   "default": "デフォルト",
+  "denoise": "ノイズ除去",
   "download_tile": "タイルをダウンロード",
   "go_wplace_live": "wplace.live を開く",
   "download_overlay": "オーバーレイをダウンロード",

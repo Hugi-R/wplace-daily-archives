@@ -197,7 +197,14 @@
     }
     #settings-panel.open { display: block; }
     #settings-panel h2 { margin: 0 24px 8px 0; font-size: 15px; }
-    #settings-panel label { display: block; margin: 8px 0 2px; }
+    #settings-panel label { display: block; }
+    #settings-panel .setting-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 8px 0 2px;
+    }
+    #settings-panel .setting-head label { margin: 0; }
     #settings-panel select { width: 100%; box-sizing: border-box; font-size: 14px; }
     #settings-close {
       position: absolute;
@@ -212,6 +219,35 @@
       line-height: 1;
     }
     #settings-close:hover { color: var(--muted-text-strong); }
+    #settings-panel .help-btn {
+      flex: none;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 1px solid var(--border-color);
+      border-radius: 50%;
+      background: transparent;
+      color: var(--muted-text);
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    #settings-panel .help-btn:hover { color: var(--muted-text-strong); }
+    #settings-panel .help-tip {
+      position: fixed;
+      z-index: 30;
+      margin: 0;
+      max-width: 240px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: var(--panel-bg);
+      box-shadow: var(--shadow-lg);
+      color: var(--button-text);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    #settings-panel .help-tip::backdrop { background: transparent; }
     #transparency-toggle button {
       padding: 6px;
       font-size: 0;
@@ -512,26 +548,46 @@
   <div id="settings-panel" role="dialog" aria-label="{{t:settings}}">
     <button id="settings-close" aria-label="{{t:close_settings_panel}}" title="{{t:close}}">&times;</button>
     <h2>{{t:settings}}</h2>
-    <label for="settings-basemap">{{t:basemap}}</label>
+    <div class="setting-head">
+      <label for="settings-basemap">{{t:basemap}}</label>
+      <button type="button" class="help-btn" popovertarget="tip-basemap" aria-label="{{t:help}}: {{t:basemap}}">?</button>
+    </div>
     <select id="settings-basemap">
       <option value="vector">{{t:basemap_vector}}</option>
       <option value="raster">{{t:basemap_raster}}</option>
     </select>
-    <label for="settings-layerswap">{{t:layerswap}}</label>
+    <div id="tip-basemap" class="help-tip" popover>{{t:basemap_hint}}</div>
+    <div class="setting-head">
+      <label for="settings-layerswap">{{t:layerswap}}</label>
+      <button type="button" class="help-btn" popovertarget="tip-layerswap" aria-label="{{t:help}}: {{t:layerswap}}">?</button>
+    </div>
     <select id="settings-layerswap">
       <option value="swap">{{t:layerswap_swap}}</option>
       <option value="reload">{{t:layerswap_reload}}</option>
       <option value="overlay">{{t:layerswap_overlay}}</option>
     </select>
-    <label for="settings-supersampling">{{t:supersampling}}</label>
+    <div id="tip-layerswap" class="help-tip" popover>{{t:layerswap_hint}}</div>
+    <div class="setting-head">
+      <label for="settings-supersampling">{{t:supersampling}}</label>
+      <button type="button" class="help-btn" popovertarget="tip-supersampling" aria-label="{{t:help}}: {{t:supersampling}}">?</button>
+    </div>
     <select id="settings-supersampling">
       <option value="1">1</option>
       <option value="2">2 ({{t:default}})</option>
       <option value="4">4</option>
       <option value="8">8</option>
     </select>
-    <label><input type="checkbox" id="toggle-tile-overlay"> {{t:show_tile_overlay}}</label>
-    <label><input type="checkbox" id="toggle-denoise"> {{t:denoise}}</label>
+    <div id="tip-supersampling" class="help-tip" popover>{{t:supersampling_hint}}</div>
+    <div class="setting-head">
+      <label><input type="checkbox" id="toggle-tile-overlay"> {{t:show_tile_overlay}}</label>
+      <button type="button" class="help-btn" popovertarget="tip-tile-overlay" aria-label="{{t:help}}: {{t:show_tile_overlay}}">?</button>
+    </div>
+    <div id="tip-tile-overlay" class="help-tip" popover>{{t:show_tile_overlay_hint}}</div>
+    <div class="setting-head">
+      <label><input type="checkbox" id="toggle-denoise"> {{t:denoise}}</label>
+      <button type="button" class="help-btn" popovertarget="tip-denoise" aria-label="{{t:help}}: {{t:denoise}}">?</button>
+    </div>
+    <div id="tip-denoise" class="help-tip" popover>{{t:denoise_hint}}</div>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>

@@ -1599,6 +1599,7 @@
       function setOpen(open) {
         settingsPanel.classList.toggle('open', open);
         settingsButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (!open) closeHelpTooltips();
       }
       settingsButton.addEventListener('click', function() {
         setOpen(!settingsPanel.classList.contains('open'));
@@ -1606,10 +1607,40 @@
       settingsClose.addEventListener('click', function() { setOpen(false); });
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape' && settingsPanel.classList.contains('open')) {
+          if (document.querySelector('.help-tip:popover-open')) return;
           setOpen(false);
           settingsButton.focus();
         }
       });
+
+      // Position settings help tooltips near their ? buttons when opened.
+      document.querySelectorAll('.help-btn').forEach(function(btn) {
+        const tip = document.getElementById(btn.getAttribute('popovertarget'));
+        if (!tip) return;
+        tip.addEventListener('toggle', function() {
+          if (!tip.matches(':popover-open')) return;
+          const r = btn.getBoundingClientRect();
+          const gap = 6;
+          let top = r.bottom + gap;
+          let left = r.left;
+          if (top + tip.offsetHeight > window.innerHeight - 4) {
+            top = r.top - gap - tip.offsetHeight;
+          }
+          if (left + tip.offsetWidth > window.innerWidth - 4) {
+            left = window.innerWidth - 4 - tip.offsetWidth;
+          }
+          if (left < 4) left = 4;
+          if (top < 4) top = 4;
+          tip.style.left = left + 'px';
+          tip.style.top = top + 'px';
+        });
+      });
+
+      function closeHelpTooltips() {
+        document.querySelectorAll('.help-tip:popover-open').forEach(function(tip) {
+          tip.hidePopover();
+        });
+      }
 
       function applySettings() {
         const basemapType = basemapSel.value === 'raster' ? 'raster' : 'vector';

@@ -1641,6 +1641,8 @@
           tip.hidePopover();
         });
       }
+      window.addEventListener('resize', closeHelpTooltips);
+      settingsPanel.addEventListener('scroll', closeHelpTooltips);
 
       function applySettings() {
         const basemapType = basemapSel.value === 'raster' ? 'raster' : 'vector';

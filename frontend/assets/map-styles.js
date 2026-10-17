@@ -202,7 +202,7 @@ export function setWplaceTransparency(map, transparent) {
 
 // Function to get wplace tile URL for selected version
 function getWplaceTileUrl(version) {
-    return `merged://tiles/${version}/{z}/{x}/{y}.png`;
+    return `merged://tiles/${version}/{z}/{x}/{y}.png${WplaceMapState.denoise ? '?denoise=1' : ''}`;
 }
 
 // Map style with raster basemap for a given wplace version

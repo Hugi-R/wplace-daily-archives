@@ -433,3 +433,39 @@ describe('syncStyleParams denoise', () => {
     assert.equal(WplaceMapState.denoise, true);
   });
 });
+
+describe('denoise in wplace tile url', () => {
+  beforeEach(() => { resetWplaceState(); });
+
+  it('omits denoise param by default', () => {
+    for (const bm of ['raster', 'vector']) {
+      const tiles = getMapStyle('v1', bm).sources.wplace.tiles;
+      assert.ok(!tiles[0].includes('denoise'), `${bm} tile url has no denoise param`);
+    }
+  });
+
+  it('appends denoise param when denoise enabled', () => {
+    WplaceMapState.denoise = true;
+    for (const bm of ['raster', 'vector']) {
+      const tiles = getMapStyle('v1', bm).sources.wplace.tiles;
+      assert.match(tiles[0], /\?denoise=1$/, `${bm} tile url ends with denoise param`);
+    }
+  });
+
+  it('wplace source changes when denoise toggles so style diff refetches', () => {
+    const off = getMapStyle('v1', 'raster');
+    WplaceMapState.denoise = true;
+    const on = getMapStyle('v1', 'raster');
+    assert.notDeepEqual(off.sources.wplace, on.sources.wplace);
+  });
+
+  it('reload strategy picks up denoise at setWplaceVersion time', async () => {
+    WplaceMapState.strategy = 'reload';
+    WplaceMapState.denoise = true;
+    const map = createMockMap();
+    const p = setWplaceVersion(map, 'v1');
+    assert.match(map._style.sources.wplace.tiles[0], /denoise=1/);
+    map.fire('styledata', {});
+    await p;
+  });
+});

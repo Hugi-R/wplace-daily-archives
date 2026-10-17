@@ -119,7 +119,7 @@ In `tileserver/i18n/tr.json`, after `"denoise": "Gürültü temizleme",`:
 Run: `cargo test real_translation_files_have_identical_key_sets`
 (working directory: `tileserver/`)
 
-Expected: PASS — all 7 languages parse and share the identical key set (78 keys each; the test also asserts 40..=100 keys per language).
+Expected: PASS — all 7 languages parse and share the identical key set (76 keys each; the test also asserts 40..=100 keys per language).
 
 - [ ] **Step 5: Run the template-render test, expect PASS**
 
@@ -379,7 +379,7 @@ git commit -m "feat(frontend): position settings tooltips and close them with th
 Run: `cargo test`
 (working directory: `tileserver/`)
 
-Expected: all tests PASS — in particular `real_translation_files_have_identical_key_sets` (78 keys × 7 languages) and `real_template_renders_all_languages_without_leftovers` (all `{{t:…}}` markers resolve).
+Expected: all tests PASS — in particular `real_translation_files_have_identical_key_sets` (76 keys × 7 languages) and `real_template_renders_all_languages_without_leftovers` (all `{{t:…}}` markers resolve).
 
 - [ ] **Step 2: Run the frontend unit tests**
 

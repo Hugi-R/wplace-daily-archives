@@ -16,11 +16,10 @@ self.onmessage = async (event) => {
     }
 
     if (type === 'decompress' && wasmModule) {
-        const { taskId, version, buffers } = data;
+        const { taskId, version, buffers, denoise } = data;
         try {
             const uint8Array = new Uint8Array(buffers[0]);
-            // compressed_bytes_to_png_blob returns a Uint8Array (PNG bytes)
-            const pngBytes = wasmModule.get_image(version, uint8Array);
+            const pngBytes = wasmModule.get_image(version, uint8Array, !!denoise);
 
             // Copy the Uint8Array to create a new ArrayBuffer we can transfer
             const arrayBuffer = new Uint8Array(pngBytes).buffer;

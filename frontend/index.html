@@ -1590,6 +1590,16 @@
       const supersamplingSel = document.getElementById('settings-supersampling');
       const denoiseToggle = document.getElementById('toggle-denoise');
 
+      // Tooltips need the Popover API (Chrome 114+, Safari 17+, Firefox 125+).
+      // Older browsers get the help UI hidden instead of broken cards and
+      // thrown :popover-open selectors.
+      const helpPopoverSupported = 'popover' in HTMLElement.prototype;
+      if (!helpPopoverSupported) {
+        document.querySelectorAll('.help-btn, .help-tip').forEach(function(el) {
+          el.hidden = true;
+        });
+      }
+
       // Initialise selects from current state (set from URL at load).
       basemapSel.value = WplaceMapState.basemapType;
       layerswapSel.value = WplaceMapState.strategy;
@@ -1607,36 +1617,39 @@
       settingsClose.addEventListener('click', function() { setOpen(false); });
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape' && settingsPanel.classList.contains('open')) {
-          if (document.querySelector('.help-tip:popover-open')) return;
+          if (helpPopoverSupported && document.querySelector('.help-tip:popover-open')) return;
           setOpen(false);
           settingsButton.focus();
         }
       });
 
       // Position settings help tooltips near their ? buttons when opened.
-      document.querySelectorAll('.help-btn').forEach(function(btn) {
-        const tip = document.getElementById(btn.getAttribute('popovertarget'));
-        if (!tip) return;
-        tip.addEventListener('toggle', function() {
-          if (!tip.matches(':popover-open')) return;
-          const r = btn.getBoundingClientRect();
-          const gap = 6;
-          let top = r.bottom + gap;
-          let left = r.left;
-          if (top + tip.offsetHeight > window.innerHeight - 4) {
-            top = r.top - gap - tip.offsetHeight;
-          }
-          if (left + tip.offsetWidth > window.innerWidth - 4) {
-            left = window.innerWidth - 4 - tip.offsetWidth;
-          }
-          if (left < 4) left = 4;
-          if (top < 4) top = 4;
-          tip.style.left = left + 'px';
-          tip.style.top = top + 'px';
+      if (helpPopoverSupported) {
+        document.querySelectorAll('.help-btn').forEach(function(btn) {
+          const tip = document.getElementById(btn.getAttribute('popovertarget'));
+          if (!tip) return;
+          tip.addEventListener('toggle', function() {
+            if (!tip.matches(':popover-open')) return;
+            const r = btn.getBoundingClientRect();
+            const gap = 6;
+            let top = r.bottom + gap;
+            let left = r.left;
+            if (top + tip.offsetHeight > window.innerHeight - 4) {
+              top = r.top - gap - tip.offsetHeight;
+            }
+            if (left + tip.offsetWidth > window.innerWidth - 4) {
+              left = window.innerWidth - 4 - tip.offsetWidth;
+            }
+            if (left < 4) left = 4;
+            if (top < 4) top = 4;
+            tip.style.left = left + 'px';
+            tip.style.top = top + 'px';
+          });
         });
-      });
+      }
 
       function closeHelpTooltips() {
+        if (!helpPopoverSupported) return;
         document.querySelectorAll('.help-tip:popover-open').forEach(function(tip) {
           tip.hidePopover();
         });

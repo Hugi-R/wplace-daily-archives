@@ -998,6 +998,7 @@
     // Create menu element (colors & spacing handled by CSS variables/rules)
     const menu = document.createElement('div');
     menu.id = 'context-menu';
+    menu.setAttribute('role', 'menu');
     menu.style.position = 'absolute';
     menu.style.display = 'none';
     menu.style.zIndex = '10';
@@ -1010,6 +1011,8 @@
     ].map(([id, labelKey]) => {
       const item = document.createElement('div');
       item.id = id;
+      item.setAttribute('role', 'menuitem');
+      item.tabIndex = -1;
       item.textContent = t(labelKey);
       return item;
     });
@@ -1018,6 +1021,22 @@
 
     let lastTileCoords = null;
     let lastClickCoords = null;
+    let menuInvoker = null;
+
+    function showMenu(clientX, clientY, invoker) {
+      menuInvoker = invoker;
+      menu.style.left = clientX + 'px';
+      menu.style.top = clientY + 'px';
+      menu.style.display = 'block';
+      menuItems[0].focus();
+    }
+
+    function hideMenu(restoreFocus) {
+      if (menu.style.display !== 'block') return;
+      menu.style.display = 'none';
+      if (restoreFocus && menuInvoker) menuInvoker.focus();
+      menuInvoker = null;
+    }
 
     // Helper: get tile coordinates for a given lngLat and zoom
     function getTileCoords(lngLat, zoom) {
@@ -1038,17 +1057,42 @@
       const zoom = Math.min(map.getZoom(), 11);
       lastTileCoords = getTileCoords(lngLat, zoom);
       lastClickCoords = { lat: lngLat.lat, lng: lngLat.lng, zoom: zoom };
-      // Position menu
-      menu.style.left = e.clientX + 'px';
-      menu.style.top = e.clientY + 'px';
-      menu.style.display = 'block';
+      showMenu(e.clientX, e.clientY, map.getContainer());
+    });
+
+    // Open the same menu from the keyboard (Shift+F10 or the Context Menu key).
+    map.getContainer().addEventListener('keydown', function(e) {
+      if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+        e.preventDefault();
+        const rect = map.getContainer().getBoundingClientRect();
+        showMenu(rect.left + rect.width / 2, rect.top + rect.height / 2, map.getContainer());
+      }
+    });
+
+    // Roving focus, activation, Escape and Tab handling inside the menu.
+    menu.addEventListener('keydown', function(e) {
+      const current = menuItems.indexOf(document.activeElement);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideMenu(true);
+      } else if (e.key === 'Tab') {
+        hideMenu(false);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
+        e.preventDefault();
+        let next;
+        if (e.key === 'Home') next = 0;
+        else if (e.key === 'End') next = menuItems.length - 1;
+        else next = (current + (e.key === 'ArrowDown' ? 1 : -1) + menuItems.length) % menuItems.length;
+        menuItems[next].focus();
+      } else if ((e.key === 'Enter' || e.key === ' ') && current !== -1) {
+        e.preventDefault();
+        menuItems[current].click();
+      }
     });
 
     // Hide menu on click elsewhere
     document.addEventListener('click', function(e) {
-      if (menu.style.display === 'block' && !menu.contains(e.target)) {
-        menu.style.display = 'none';
-      }
+      if (!menu.contains(e.target)) hideMenu(false);
     });
 
     // Download tile handler

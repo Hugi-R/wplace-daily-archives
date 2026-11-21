@@ -18,7 +18,9 @@
   <meta name="twitter:description" content="{{t:meta_description}}">
   <meta name="twitter:image" content="/preview.png">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet"
+        integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK"
+        crossorigin="anonymous" referrerpolicy="no-referrer" />
   <style>
     :root {
       /* Primary UI colors */
@@ -590,7 +592,9 @@
     <div id="tip-denoise" class="help-tip" popover>{{t:denoise_hint}}</div>
   </div>
 
-  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
+          integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp"
+          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script type="module">
     import {getMapStyle, WplaceMapState, initWplaceStateFromUrl, setWplaceVersion, setWplaceTransparency, snapSupersampling, syncStyleParams} from '/assets/map-styles.js';
     var wasmModule = null;

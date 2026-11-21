@@ -1001,11 +1001,19 @@
     menu.style.position = 'absolute';
     menu.style.display = 'none';
     menu.style.zIndex = '10';
-    menu.innerHTML = `
-      <div id="download-tile">${t('download_tile')}</div>
-      <div id="download-overlay">${t('download_overlay')}</div>
-      <div id="go-wplace-live">${t('go_wplace_live')}</div>
-    `;
+    // Build items as DOM nodes so localized labels are inserted as text, not
+    // parsed as HTML (safe under Trusted Types and strict CSP).
+    const menuItems = [
+      ['download-tile', 'download_tile'],
+      ['download-overlay', 'download_overlay'],
+      ['go-wplace-live', 'go_wplace_live'],
+    ].map(([id, labelKey]) => {
+      const item = document.createElement('div');
+      item.id = id;
+      item.textContent = t(labelKey);
+      return item;
+    });
+    menu.replaceChildren(...menuItems);
     document.body.appendChild(menu);
 
     let lastTileCoords = null;

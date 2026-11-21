@@ -766,7 +766,7 @@
     versionSlider.max = WPLACE_VERSIONS.length - 1;
     versionSlider.value = WPLACE_VERSIONS.length - 1;
     // Add ticks and labels
-    tickList.innerHTML = '';
+    tickList.replaceChildren();
     WPLACE_VERSIONS.forEach((v, i) => {
       const option = document.createElement('option');
       option.value = i;
